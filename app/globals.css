@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-charcoal: #161412;
+  --surface-umber: #231F1C;
+  --accent-terracotta: #D96B52;
+  --accent-gold: #E5C185;
+  --accent-sage: #7A9E7E;
+  --accent-crimson: #C85A5A;
+  --text-ivory: #F5F0EB;
+  --text-sand: #A89F96;
+}
+
+body {
+  background-color: #161412;
+  color: #F5F0EB;
+}
+
+@keyframes duskPulse {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+@keyframes duskHalo {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.25;
+  }
+  50% {
+    transform: scale(1.14);
+    opacity: 0.55;
+  }
+}
+
+.animate-dusk-pulse {
+  animation: duskPulse 3.6s ease-in-out infinite;
+}
+
+.animate-dusk-halo {
+  animation: duskHalo 5.4s ease-in-out infinite;
+}
