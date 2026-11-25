@@ -1,57 +1,90 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { RoomServiceClient } from 'livekit-server-sdk';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { NextResponse } from "next/server";
+import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
 
-export async function POST(req: NextRequest) {
+export async function POST(request: Request) {
   try {
-    const { callId, reporterId, severityTier, reasonCode, autoFlagged } = await req.json();
-    if (!callId || !reporterId) {
-      return NextResponse.json({ error: 'Missing callId or reporterId' }, { status: 400 });
+    const body = (await request.json()) as {
+      roomName?: string;
+      reporter?: string;
+      reported?: string;
+      reason?: string;
+      matchId?: string;
+    };
+
+    const reporterId = normalizeIdentity(body.reporter || "");
+    const reportedId = normalizeIdentity(body.reported || "");
+    const reason = (body.reason || "Safety concern").trim();
+    const roomName = (body.roomName || "").trim();
+
+    if (!reporterId || !reportedId) {
+      return NextResponse.json(
+        { ok: false, error: "Both reporter and reported identities are required." },
+        { status: 400 }
+      );
     }
 
-    const { data: call, error: callError } = await supabaseAdmin
-      .from('calls')
-      .select('*')
-      .eq('id', callId)
-      .single();
+    const supabase = getSupabaseService();
 
-    if (callError || !call) {
-      return NextResponse.json({ error: 'Call not found' }, { status: 404 });
+    // 1. Log safety report
+    const { error: reportErr } = await supabase.from("safety_reports").insert({
+      room_name: roomName || null,
+      reporter_identity: reporterId,
+      reported_identity: reportedId,
+      reason,
+    });
+    if (reportErr) {
+      return NextResponse.json({ ok: false, error: reportErr.message }, { status: 500 });
     }
 
-    const reportedId = call.man_id === reporterId ? call.woman_id : call.man_id;
-
-    // 1. Immediately tear down the LiveKit room so both users disconnect
-    const livekitHost = process.env.NEXT_PUBLIC_LIVEKIT_URL!.replace('wss://', 'https://');
-    const roomService = new RoomServiceClient(
-      livekitHost,
-      process.env.LIVEKIT_API_KEY!,
-      process.env.LIVEKIT_API_SECRET!
+    // 2. Permanently block pair from future matches
+    await supabase.from("user_blocks").upsert(
+      {
+        blocker_identity: reporterId,
+        blocked_identity: reportedId,
+        reason,
+      },
+      { onConflict: "blocker_identity,blocked_identity" }
     );
-    try {
-      await roomService.deleteRoom(call.livekit_room_name);
-    } catch {
-      // Room may already be closed
+
+    // 3. Disable any existing match between these two users
+    const [userA, userB] = [reporterId, reportedId].sort();
+    await supabase
+      .from("matches")
+      .update({ status: "blocked" })
+      .eq("user_a", userA)
+      .eq("user_b", userB);
+
+    if (body.matchId) {
+      await supabase.from("matches").update({ status: "blocked" }).eq("id", body.matchId);
     }
 
-    // 2. Mark call terminated and log permanent block/report
-    await Promise.all([
-      supabaseAdmin
-        .from('calls')
-        .update({ status: 'terminated_safety', ended_at: new Date().toISOString() })
-        .eq('id', callId),
-      supabaseAdmin.from('blocks_and_reports').insert({
-        reporter_id: reporterId,
-        reported_id: reportedId,
-        call_id: callId,
-        severity_tier: severityTier || 'tier_1',
-        reason_code: reasonCode || 'user_safety_exit',
-        auto_flagged: Boolean(autoFlagged),
-      }),
-    ]);
+    // 4. Auto-suspend if 2 or more unique reporters have flagged this user
+    const { data: priorReports } = await supabase
+      .from("safety_reports")
+      .select("reporter_identity")
+      .eq("reported_identity", reportedId);
 
-    return NextResponse.json({ terminated: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Terminate error' }, { status: 500 });
+    const uniqueReporters = new Set(
+      (priorReports || []).map((row) => row.reporter_identity)
+    );
+    const reportCount = uniqueReporters.size;
+    let autoSuspended = false;
+
+    if (reportCount >= 2) {
+      await supabase.from("suspended_identities").upsert(
+        {
+          identity: reportedId,
+          report_count: reportCount,
+          reason: `Auto-suspended after ${reportCount} unique safety reports. Latest: ${reason}`,
+        },
+        { onConflict: "identity" }
+      );
+      autoSuspended = true;
+    }
+
+    return NextResponse.json({ ok: true, reportCount, autoSuspended });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to record report";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
