@@ -20,6 +20,8 @@ type WakeLockSentinelLike = {
   release: () => Promise<void>;
 };
 
+type PipCorner = "top-right" | "top-left" | "bottom-right" | "bottom-left";
+
 type SignalMessage =
   | { type: "video_request" }
   | { type: "video_cancel" }
@@ -38,17 +40,31 @@ type PartnerVaultProfile = {
   favoriteSpot: string;
 };
 
-const CONVERSATION_SPARKS: string[] = [
-  "Best trip you have ever taken, and what made it stick?",
-  "Hidden gem spot in Southwest Florida you would actually recommend?",
-  "Ideal Sunday morning: slow coffee at home, out on the water, or a local breakfast spot?",
-  "What is something you have genuinely changed your mind on in the last five years?",
-  "If you had a free Friday night with zero errands, how are you spending it?",
-  "What is a small everyday luxury you refuse to give up?",
-  "Best meal you have cooked or eaten recently?",
-  "Beach sunset, quiet patio dinner, or live music somewhere low-key?",
-  "What is a skill or hobby you picked up later in life that surprised you?",
-  "What makes a first in-person meet actually feel easy instead of like an interview?",
+const SPARK_WORDS: string[] = [
+  "Canoe",
+  "Kangaroo",
+  "Lighthouse",
+  "Hammock",
+  "Pineapple",
+  "Compass",
+  "Velvet",
+  "Flamingo",
+  "Campfire",
+  "Telescope",
+  "Driftwood",
+  "Espresso",
+  "Submarine",
+  "Firefly",
+  "Monsoon",
+  "Vinyl",
+  "Sourdough",
+  "Origami",
+  "Gondola",
+  "Cactus",
+  "Trampoline",
+  "Meteor",
+  "Accordion",
+  "Sandbar",
 ];
 
 const REPORT_REASONS = [
@@ -105,6 +121,10 @@ export default function CallPage() {
   const [isLightingDark, setIsLightingDark] = useState(false);
   const [softLightOn, setSoftLightOn] = useState(false);
 
+  // Draggable FaceTime-style Self-View PiP
+  const [pipCorner, setPipCorner] = useState<PipCorner>("top-right");
+  const [pipDragPos, setPipDragPos] = useState<{ left: number; top: number } | null>(null);
+
   // Mutual Video Consent
   const [videoRequestedByMe, setVideoRequestedByMe] = useState(false);
   const [videoRequestedByPartner, setVideoRequestedByPartner] = useState(false);
@@ -117,11 +137,11 @@ export default function CallPage() {
   const [showVaultModal, setShowVaultModal] = useState(false);
   const [partnerVault, setPartnerVault] = useState<PartnerVaultProfile | null>(null);
 
-  // Conversation Spark slim bar
+  // 3-Second Spark state
   const [sparkIndex, setSparkIndex] = useState(0);
-  const [sparkExpanded, setSparkExpanded] = useState(true);
+  const [sparkVisible, setSparkVisible] = useState(true);
 
-  // Safety & Report drawer
+  // Safety & Report sheet
   const [showSafetySheet, setShowSafetySheet] = useState(false);
   const [reportSubmitting, setReportSubmitting] = useState(false);
 
@@ -130,14 +150,23 @@ export default function CallPage() {
 
   // Refs
   const roomRef = useRef<Room | null>(null);
+  const stageRef = useRef<HTMLElement | null>(null);
+  const pipRef = useRef<HTMLDivElement | null>(null);
+  const dragMetaRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
-  const sparkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Keep latest consent flags accessible inside LiveKit event listeners
+  // Refs for LiveKit listener closures
   const videoReqMeRef = useRef(false);
   const revealReqMeRef = useRef(false);
   const previewTrackRef = useRef<LocalVideoTrack | null>(null);
@@ -176,7 +205,7 @@ export default function CallPage() {
     }
   }, []);
 
-  // Wake Lock management (prevents Android/iOS from locking screen mid voice call)
+  // Wake Lock management (prevents Android/iOS from sleeping mid-call)
   const requestWakeLock = useCallback(async () => {
     if (typeof navigator === "undefined") return;
     const navWithWakeLock = navigator as Navigator & {
@@ -229,23 +258,6 @@ export default function CallPage() {
     return () => clearInterval(interval);
   }, [inCall]);
 
-  // Auto-collapse Conversation Spark bar after 10 seconds
-  const scheduleSparkAutoHide = useCallback(() => {
-    if (sparkTimerRef.current) clearTimeout(sparkTimerRef.current);
-    sparkTimerRef.current = setTimeout(() => {
-      setSparkExpanded(false);
-    }, 10000);
-  }, []);
-
-  useEffect(() => {
-    if (inCall && sparkExpanded) {
-      scheduleSparkAutoHide();
-    }
-    return () => {
-      if (sparkTimerRef.current) clearTimeout(sparkTimerRef.current);
-    };
-  }, [inCall, sparkExpanded, sparkIndex, scheduleSparkAutoHide]);
-
   // Stop local private preview track cleanly (critical on Android before enabling live camera)
   const stopPreviewTrack = useCallback(() => {
     if (previewTrackRef.current) {
@@ -285,7 +297,6 @@ export default function CallPage() {
     setRevealRequestedByPartner(false);
     triggerHaptic([20, 40, 20]);
 
-    // Share local demo vault card over data channel for sandbox testing
     sendSignal({
       type: "partner_profile",
       profile: {
@@ -298,7 +309,7 @@ export default function CallPage() {
     });
   }, [sendSignal]);
 
-  // Attach remote video track whenever track or element updates
+  // Attach remote video track
   useEffect(() => {
     const videoEl = remoteVideoRef.current;
     if (!videoEl || !partnerVideoTrack) return;
@@ -308,7 +319,7 @@ export default function CallPage() {
     };
   }, [partnerVideoTrack, videoUnlocked]);
 
-  // Attach local video track (either private Preview Cam or live published camera)
+  // Attach local video track (Preview Cam or live published camera)
   const activeLocalVideoTrack = videoUnlocked ? localLiveVideoTrack : previewTrack;
   useEffect(() => {
     const videoEl = localVideoRef.current;
@@ -319,7 +330,7 @@ export default function CallPage() {
     };
   }, [activeLocalVideoTrack, localCameraHidden]);
 
-  // Lightweight canvas darkness check on local preview / video feed
+  // Lightweight canvas darkness check on local video feed
   useEffect(() => {
     if (!activeLocalVideoTrack || localCameraHidden) {
       setIsLightingDark(false);
@@ -357,6 +368,81 @@ export default function CallPage() {
     };
   }, [activeLocalVideoTrack, localCameraHidden]);
 
+  // Draggable PiP pointer handlers (FaceTime-style 4-corner snap)
+  const handlePipPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const stageEl = stageRef.current;
+    const pipEl = pipRef.current;
+    if (!stageEl || !pipEl) return;
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const stageRect = stageEl.getBoundingClientRect();
+    const pipRect = pipEl.getBoundingClientRect();
+
+    dragMetaRef.current = {
+      pointerId: e.pointerId,
+      offsetX: e.clientX - pipRect.left,
+      offsetY: e.clientY - pipRect.top,
+      width: pipRect.width,
+      height: pipRect.height,
+    };
+
+    setPipDragPos({
+      left: pipRect.left - stageRect.left,
+      top: pipRect.top - stageRect.top,
+    });
+  };
+
+  const handlePipPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const meta = dragMetaRef.current;
+    const stageEl = stageRef.current;
+    if (!meta || meta.pointerId !== e.pointerId || !stageEl) return;
+
+    const stageRect = stageEl.getBoundingClientRect();
+    const pad = 10;
+    const rawLeft = e.clientX - stageRect.left - meta.offsetX;
+    const rawTop = e.clientY - stageRect.top - meta.offsetY;
+
+    const maxLeft = Math.max(pad, stageRect.width - meta.width - pad);
+    const maxTop = Math.max(pad, stageRect.height - meta.height - pad);
+
+    setPipDragPos({
+      left: Math.min(Math.max(rawLeft, pad), maxLeft),
+      top: Math.min(Math.max(rawTop, pad), maxTop),
+    });
+  };
+
+  const handlePipPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const meta = dragMetaRef.current;
+    const stageEl = stageRef.current;
+    if (!meta || meta.pointerId !== e.pointerId) return;
+
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+
+    if (stageEl && pipDragPos) {
+      const stageRect = stageEl.getBoundingClientRect();
+      const centerX = pipDragPos.left + meta.width / 2;
+      const centerY = pipDragPos.top + meta.height / 2;
+      const isLeft = centerX < stageRect.width / 2;
+      const isTop = centerY < stageRect.height / 2;
+
+      const nextCorner: PipCorner = isTop
+        ? isLeft
+          ? "top-left"
+          : "top-right"
+        : isLeft
+        ? "bottom-left"
+        : "bottom-right";
+
+      setPipCorner(nextCorner);
+      triggerHaptic(10);
+    }
+
+    dragMetaRef.current = null;
+    setPipDragPos(null);
+  };
+
   // Sync initial remote participant helper
   const syncRemoteParticipant = useCallback((participant: RemoteParticipant) => {
     setPartnerName(participant.name || participant.identity || "Your Match");
@@ -375,7 +461,7 @@ export default function CallPage() {
     });
   }, []);
 
-  // Resilient token fetcher (supports POST and GET variants of /api/calls/test-token)
+  // Token fetcher (supports POST and GET variants of /api/calls/test-token)
   const fetchLiveKitToken = async (room: string, name: string) => {
     const body = JSON.stringify({
       room,
@@ -456,7 +542,6 @@ export default function CallPage() {
       room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         syncRemoteParticipant(participant);
         showToast(`${participant.name || participant.identity} joined the call`);
-        // Re-sync pending consent requests if we requested before they arrived
         if (videoReqMeRef.current) sendSignal({ type: "video_request" });
         if (revealReqMeRef.current) sendSignal({ type: "reveal_request" });
       });
@@ -556,8 +641,8 @@ export default function CallPage() {
               showToast(`${who} is not ready to share profiles yet.`);
               break;
             case "spark_index":
-              setSparkIndex(msg.index % CONVERSATION_SPARKS.length);
-              setSparkExpanded(true);
+              setSparkIndex(msg.index % SPARK_WORDS.length);
+              setSparkVisible(true);
               break;
             case "partner_profile":
               setPartnerVault(msg.profile);
@@ -574,14 +659,13 @@ export default function CallPage() {
       setIsMuted(false);
       setConnectionState(room.state);
 
-      // Sync anyone already waiting in the room
       const existingPartners = Array.from(room.remoteParticipants.values());
       if (existingPartners.length > 0) {
         syncRemoteParticipant(existingPartners[0]);
       }
 
       setInCall(true);
-      setSparkExpanded(true);
+      setSparkVisible(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unable to connect to call room.";
       setJoinError(msg);
@@ -624,12 +708,14 @@ export default function CallPage() {
       setPartnerVault(null);
       setShowSafetySheet(false);
       setSoftLightOn(false);
+      setPipCorner("top-right");
+      setPipDragPos(null);
       if (notice) setEndedNotice(notice);
     },
     [releaseWakeLock, stopPreviewTrack]
   );
 
-  // Cleanup on page unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopPreviewTrack();
@@ -736,10 +822,11 @@ export default function CallPage() {
     await sendSignal({ type: "reveal_decline" });
   };
 
-  const handleNextSpark = async () => {
-    const nextIdx = (sparkIndex + 1) % CONVERSATION_SPARKS.length;
+  const handleNewWord = async () => {
+    const nextIdx = (sparkIndex + 1) % SPARK_WORDS.length;
     setSparkIndex(nextIdx);
-    setSparkExpanded(true);
+    setSparkVisible(true);
+    triggerHaptic(10);
     await sendSignal({ type: "spark_index", index: nextIdx });
   };
 
@@ -779,35 +866,35 @@ export default function CallPage() {
   // ---------------- PRE-CALL LOBBY VIEW ----------------
   if (!inCall) {
     return (
-      <main className="min-h-[100dvh] bg-[#0B1220] text-slate-100 flex items-center justify-center p-4">
-        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-[#111A2E]/90 p-6 shadow-2xl">
+      <main className="min-h-[100dvh] bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl border border-[#F0E2CC]/15 bg-[#171215] p-6 shadow-2xl">
           <div className="mb-5">
-            <span className="inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-300">
+            <span className="inline-flex items-center rounded-full border border-[#E5C17B]/35 bg-[#E5C17B]/10 px-3 py-1 text-xs font-medium tracking-wide text-[#E5C17B]">
               Coastal Dusk Live Room
             </span>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white">
+            <h1 className="mt-3 font-serif text-2xl font-semibold tracking-tight text-[#F8F1E7]">
               Voice-First Test Call
             </h1>
-            <p className="mt-1.5 text-sm text-slate-400">
+            <p className="mt-1.5 text-sm text-[#B3A499]">
               Cameras stay off until both people agree. Use two separate phones or earbuds to avoid speaker echo.
             </p>
           </div>
 
           {endedNotice && (
-            <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+            <div className="mb-4 rounded-xl border border-[#E5C17B]/30 bg-[#251E18] px-4 py-3 text-sm text-[#F0D9AE]">
               {endedNotice}
             </div>
           )}
 
           {joinError && (
-            <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <div className="mb-4 rounded-xl border border-[#8E434F] bg-[#31171C] px-4 py-3 text-sm text-[#F4C4CB]">
               {joinError}
             </div>
           )}
 
           <form onSubmit={handleJoinRoom} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium uppercase tracking-wider text-slate-400 mb-1.5">
+              <label className="block text-xs font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
                 Your First Name
               </label>
               <input
@@ -816,12 +903,12 @@ export default function CallPage() {
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="e.g., Justin"
                 autoComplete="given-name"
-                className="w-full min-h-[46px] rounded-xl border border-slate-700 bg-[#0B1220] px-4 text-base text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-base text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium uppercase tracking-wider text-slate-400 mb-1.5">
+              <label className="block text-xs font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
                 Room Code
               </label>
               <input
@@ -829,14 +916,14 @@ export default function CallPage() {
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
                 placeholder="coastal-dusk-test"
-                className="w-full min-h-[46px] rounded-xl border border-slate-700 bg-[#0B1220] px-4 text-base text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-base text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
               />
             </div>
 
             <button
               type="submit"
               disabled={joining}
-              className="w-full min-h-[48px] rounded-xl bg-amber-400 px-5 text-base font-semibold text-slate-950 transition hover:bg-amber-300 disabled:opacity-60"
+              className="w-full min-h-[48px] rounded-xl bg-[#E5C17B] px-5 text-base font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
             >
               {joining ? "Connecting Audio..." : "Join Voice Room"}
             </button>
@@ -846,24 +933,39 @@ export default function CallPage() {
     );
   }
 
-  // ---------------- LIVE CALL VIEW (LOCKED 100dvh) ----------------
+  // ---------------- LIVE CALL VIEW (LOCKED 100dvh, COASTAL DUSK PALETTE) ----------------
   const partnerLabel = partnerName || "Waiting for partner";
+  const hasTopBanner =
+    connectionState === ConnectionState.Reconnecting ||
+    isMuted ||
+    (Boolean(partnerName) && partnerMuted) ||
+    (isLightingDark && !softLightOn) ||
+    Boolean(toast);
+
+  const pipPositionClass =
+    pipCorner === "top-right"
+      ? `${hasTopBanner ? "top-16" : "top-3"} right-3`
+      : pipCorner === "top-left"
+      ? `${hasTopBanner ? "top-16" : "top-3"} left-3`
+      : pipCorner === "bottom-right"
+      ? `${sparkVisible ? "bottom-32" : "bottom-16"} right-3`
+      : `${sparkVisible ? "bottom-32" : "bottom-16"} left-3`;
 
   return (
     <div
-      className={`h-[100dvh] w-full overflow-hidden flex flex-col bg-[#090F1C] text-slate-100 select-none transition-all duration-300 ${
+      className={`h-[100dvh] w-full overflow-hidden flex flex-col bg-[#0F0C0E] text-[#F5EDE2] select-none transition-all duration-300 ${
         softLightOn
-          ? "border-[14px] border-[#FFF3DC] shadow-[inset_0_0_48px_rgba(255,243,220,0.65)]"
+          ? "border-[12px] border-[#F8EBD3] shadow-[inset_0_0_40px_rgba(248,235,211,0.45)]"
           : "border-0"
       }`}
     >
       {/* Hidden audio element for remote voice */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
-      {/* PINNED TOP HEADER (never scrolls off screen) */}
-      <header className="shrink-0 z-30 flex items-center justify-between gap-2 px-3 py-2.5 bg-[#0B1220]/95 border-b border-slate-800/80">
+      {/* PINNED TOP HEADER */}
+      <header className="shrink-0 z-30 flex items-center justify-between gap-2 px-3 py-2.5 bg-[#141013]/95 border-b border-[#F0E2CC]/12">
         <div className="flex items-center gap-2.5 min-w-0">
-          {/* Signal bars */}
+          {/* Signal bars (warm champagne gold, no neon green) */}
           <div
             className="flex items-end gap-0.5 h-4 px-1"
             aria-label={`Connection quality ${signalBars} of 3`}
@@ -876,9 +978,9 @@ export default function CallPage() {
                 } ${
                   bar <= signalBars
                     ? signalBars === 1
-                      ? "bg-amber-400"
-                      : "bg-emerald-400"
-                    : "bg-slate-700"
+                      ? "bg-[#C87D6A]"
+                      : "bg-[#E5C17B]"
+                    : "bg-[#382F32]"
                 }`}
               />
             ))}
@@ -886,20 +988,20 @@ export default function CallPage() {
 
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold text-white">
+              <span className="truncate text-sm font-semibold text-[#F8F1E7]">
                 {partnerLabel}
               </span>
-              <span className="shrink-0 rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-300">
+              <span className="shrink-0 rounded-full border border-[#F0E2CC]/15 bg-[#1F191C] px-2 py-0.5 text-[11px] font-medium tabular-nums text-[#C9BCB0]">
                 {formatDuration(elapsedSeconds)}
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 truncate">
+            <p className="text-[11px] text-[#A89A90] truncate">
               {videoUnlocked ? "Live video shared" : "Voice-first mode"}
             </p>
           </div>
         </div>
 
-        {/* Right pinned controls: Soft Light + Safety Shield */}
+        {/* Right pinned controls: Soft Light + Safety */}
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
@@ -909,8 +1011,8 @@ export default function CallPage() {
             }}
             className={`min-h-[44px] px-3 rounded-xl text-xs font-medium border transition flex items-center gap-1.5 ${
               softLightOn
-                ? "bg-[#FFF3DC] text-slate-950 border-amber-200"
-                : "bg-slate-900/90 text-slate-200 border-slate-700 hover:bg-slate-800"
+                ? "bg-[#F8EBD3] text-[#1A1310] border-[#F8EBD3]"
+                : "bg-[#1C1619] text-[#E6DACB] border-[#F0E2CC]/20 hover:bg-[#261E22]"
             }`}
             aria-pressed={softLightOn}
             title="Toggle warm screen glow for dark rooms"
@@ -925,7 +1027,7 @@ export default function CallPage() {
               setShowSafetySheet(true);
               triggerHaptic(15);
             }}
-            className="min-h-[44px] px-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs font-semibold hover:bg-rose-500/25 transition flex items-center gap-1.5"
+            className="min-h-[44px] px-3 rounded-xl bg-[#2A161A] border border-[#6E3943] text-[#EBB8BF] text-xs font-semibold hover:bg-[#3A1E24] transition flex items-center gap-1.5"
           >
             <ShieldIcon className="w-4 h-4" />
             <span>Safety</span>
@@ -933,9 +1035,12 @@ export default function CallPage() {
         </div>
       </header>
 
-      {/* MAIN CALL STAGE (flex-1, locked inside 100dvh) */}
-      <section className="relative flex-1 min-h-0 w-full overflow-hidden flex items-center justify-center bg-gradient-to-b from-[#0E172A] to-[#070B14]">
-        {/* Remote video feed (when mutually unlocked & track active) */}
+      {/* MAIN CALL STAGE (locked inside 100dvh) */}
+      <section
+        ref={stageRef}
+        className="relative flex-1 min-h-0 w-full overflow-hidden flex items-center justify-center bg-gradient-to-b from-[#171215] via-[#110D10] to-[#0B080A]"
+      >
+        {/* Remote video feed */}
         {videoUnlocked && partnerVideoTrack ? (
           <video
             ref={remoteVideoRef}
@@ -945,18 +1050,18 @@ export default function CallPage() {
           />
         ) : (
           <div className="flex flex-col items-center justify-center text-center px-6">
-            <div className="relative flex h-24 w-24 items-center justify-center rounded-full border border-amber-400/30 bg-amber-400/10 text-3xl font-semibold text-amber-200 shadow-lg">
+            <div className="relative flex h-24 w-24 items-center justify-center rounded-full border border-[#E5C17B]/35 bg-[#221B1D] font-serif text-3xl font-semibold text-[#E5C17B] shadow-lg">
               {(partnerName || "?").charAt(0).toUpperCase()}
               {partnerName && !partnerMuted && (
-                <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-slate-950 ring-2 ring-[#0B1220]">
+                <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-[#E5C17B] text-[#1A1310] ring-2 ring-[#110D10]">
                   <MicOnIcon className="w-3.5 h-3.5" />
                 </span>
               )}
             </div>
-            <h2 className="mt-4 text-lg font-semibold text-white">
+            <h2 className="mt-4 font-serif text-xl font-medium text-[#F8F1E7]">
               {partnerName ? `Talking with ${partnerName}` : "Waiting in the room..."}
             </h2>
-            <p className="mt-1 max-w-xs text-xs text-slate-400">
+            <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-[#A89A90]">
               {partnerName
                 ? videoUnlocked
                   ? `${partnerName} has their camera hidden right now.`
@@ -966,35 +1071,35 @@ export default function CallPage() {
           </div>
         )}
 
-        {/* TOP STATUS BANNERS (Reconnecting, Mute States, Darkness Warning, Toast) */}
+        {/* TOP STATUS BANNERS (Cohesive dusk-wine & champagne palette) */}
         <div className="pointer-events-none absolute top-3 inset-x-3 z-20 flex flex-col items-center gap-2">
           {connectionState === ConnectionState.Reconnecting && (
-            <div className="rounded-full border border-amber-400/50 bg-amber-500/20 backdrop-blur-md px-4 py-1.5 text-xs font-semibold text-amber-200 shadow">
+            <div className="rounded-full border border-[#E5C17B]/45 bg-[#2A2118]/95 backdrop-blur-md px-4 py-1.5 text-xs font-medium text-[#F3DBAC] shadow">
               Reconnecting... hold tight, call is still active
             </div>
           )}
 
           {isMuted && (
-            <div className="flex items-center gap-1.5 rounded-full border border-rose-500/60 bg-rose-600/90 px-4 py-1.5 text-xs font-semibold text-white shadow-lg">
+            <div className="flex items-center gap-1.5 rounded-full border border-[#B85766] bg-[#7A2835]/95 px-4 py-1.5 text-xs font-semibold text-[#FFF1F3] shadow-lg">
               <MicOffIcon className="w-3.5 h-3.5" />
               <span>You are muted. Tap Unmute to speak.</span>
             </div>
           )}
 
           {partnerName && partnerMuted && (
-            <div className="flex items-center gap-1.5 rounded-full border border-slate-600 bg-slate-900/90 px-3.5 py-1 text-xs font-medium text-slate-200 shadow">
-              <MicOffIcon className="w-3.5 h-3.5 text-amber-400" />
+            <div className="flex items-center gap-1.5 rounded-full border border-[#F0E2CC]/20 bg-[#1B1518]/92 px-3.5 py-1 text-xs font-medium text-[#E4D8CA] shadow">
+              <MicOffIcon className="w-3.5 h-3.5 text-[#E5C17B]" />
               <span>{partnerName} is muted</span>
             </div>
           )}
 
           {isLightingDark && !softLightOn && (
-            <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-amber-400/40 bg-slate-950/90 backdrop-blur px-3.5 py-2 text-xs text-amber-100 shadow-lg">
+            <div className="pointer-events-auto flex items-center gap-2.5 rounded-xl border border-[#E5C17B]/35 bg-[#1A1417]/95 backdrop-blur px-3.5 py-2 text-xs text-[#F2E4CE] shadow-lg">
               <span>Your video looks dark. Face a lamp or try Soft Light.</span>
               <button
                 type="button"
                 onClick={() => setSoftLightOn(true)}
-                className="shrink-0 rounded-lg bg-amber-400 px-2.5 py-1 text-xs font-semibold text-slate-950"
+                className="shrink-0 rounded-lg bg-[#E5C17B] px-2.5 py-1 text-xs font-semibold text-[#1A1310]"
               >
                 Turn On
               </button>
@@ -1002,34 +1107,38 @@ export default function CallPage() {
           )}
 
           {toast && (
-            <div className="rounded-full border border-slate-700 bg-slate-900/95 px-4 py-1.5 text-xs font-medium text-slate-100 shadow-lg">
+            <div className="rounded-full border border-[#F0E2CC]/20 bg-[#1B1518]/95 px-4 py-1.5 text-xs font-medium text-[#F5EDE2] shadow-lg">
               {toast}
             </div>
           )}
         </div>
 
-        {/* INCOMING CONSENT PROMPTS (Non-pressured, explicit Accept / Not Yet) */}
-        <div className="absolute bottom-16 inset-x-3 z-20 flex flex-col items-center gap-2">
+        {/* INCOMING MUTUAL CONSENT PROMPTS */}
+        <div
+          className={`absolute inset-x-3 z-20 flex flex-col items-center gap-2 ${
+            sparkVisible ? "bottom-32" : "bottom-16"
+          }`}
+        >
           {videoRequestedByPartner && !videoUnlocked && (
-            <div className="w-full max-w-sm rounded-2xl border border-amber-400/40 bg-[#101A2F]/95 backdrop-blur-md p-3.5 shadow-2xl">
-              <p className="text-sm font-medium text-white">
+            <div className="w-full max-w-sm rounded-2xl border border-[#E5C17B]/40 bg-[#181316]/95 backdrop-blur-md p-3.5 shadow-2xl">
+              <p className="text-sm font-medium text-[#F8F1E7]">
                 {partnerName || "Your match"} wants to turn on live video.
               </p>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-[#A89A90] mt-0.5">
                 Both cameras turn on together only if you say yes.
               </p>
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   onClick={handleVideoConsentAction}
-                  className="flex-1 min-h-[44px] rounded-xl bg-amber-400 text-xs font-semibold text-slate-950 hover:bg-amber-300"
+                  className="flex-1 min-h-[44px] rounded-xl bg-[#E5C17B] text-xs font-semibold text-[#1A1310] hover:bg-[#EED093]"
                 >
                   Turn On Video
                 </button>
                 <button
                   type="button"
                   onClick={handleDeclineVideo}
-                  className="min-h-[44px] px-4 rounded-xl border border-slate-700 bg-slate-900 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                  className="min-h-[44px] px-4 rounded-xl border border-[#F0E2CC]/20 bg-[#211B1E] text-xs font-medium text-[#DDD0C2] hover:bg-[#2C2428]"
                 >
                   Stay Audio-Only
                 </button>
@@ -1038,25 +1147,25 @@ export default function CallPage() {
           )}
 
           {revealRequestedByPartner && !vaultUnlocked && (
-            <div className="w-full max-w-sm rounded-2xl border border-emerald-400/40 bg-[#101A2F]/95 backdrop-blur-md p-3.5 shadow-2xl">
-              <p className="text-sm font-medium text-white">
+            <div className="w-full max-w-sm rounded-2xl border border-[#E5C17B]/40 bg-[#181316]/95 backdrop-blur-md p-3.5 shadow-2xl">
+              <p className="text-sm font-medium text-[#F8F1E7]">
                 {partnerName || "Your match"} wants to share profiles.
               </p>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-[#A89A90] mt-0.5">
                 No pressure. Vault details unlock only if you agree.
               </p>
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   onClick={handleRevealConsentAction}
-                  className="flex-1 min-h-[44px] rounded-xl bg-emerald-400 text-xs font-semibold text-slate-950 hover:bg-emerald-300"
+                  className="flex-1 min-h-[44px] rounded-xl bg-[#E5C17B] text-xs font-semibold text-[#1A1310] hover:bg-[#EED093]"
                 >
                   Share Profile
                 </button>
                 <button
                   type="button"
                   onClick={handleDeclineReveal}
-                  className="min-h-[44px] px-4 rounded-xl border border-slate-700 bg-slate-900 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                  className="min-h-[44px] px-4 rounded-xl border border-[#F0E2CC]/20 bg-[#211B1E] text-xs font-medium text-[#DDD0C2] hover:bg-[#2C2428]"
                 >
                   Not Yet
                 </button>
@@ -1065,75 +1174,94 @@ export default function CallPage() {
           )}
         </div>
 
-        {/* SELF-VIEW TILE (Preview Cam or Live Self-View) */}
+        {/* DRAGGABLE SELF-VIEW TILE (FaceTime-style 4-corner snap) */}
         {activeLocalVideoTrack && !localCameraHidden && (
-          <div className="absolute right-3 bottom-16 z-20 w-28 sm:w-36 aspect-[3/4] overflow-hidden rounded-2xl border border-slate-600/80 bg-black shadow-2xl">
+          <div
+            ref={pipRef}
+            onPointerDown={handlePipPointerDown}
+            onPointerMove={handlePipPointerMove}
+            onPointerUp={handlePipPointerUp}
+            onPointerCancel={handlePipPointerUp}
+            style={
+              pipDragPos
+                ? { left: `${pipDragPos.left}px`, top: `${pipDragPos.top}px` }
+                : undefined
+            }
+            className={`absolute z-20 w-28 sm:w-36 aspect-[3/4] overflow-hidden rounded-2xl border border-[#F0E2CC]/30 bg-black shadow-2xl touch-none cursor-grab active:cursor-grabbing ${
+              pipDragPos ? "scale-[1.03] shadow-[0_16px_40px_rgba(0,0,0,0.7)]" : `transition-all duration-300 ease-out ${pipPositionClass}`
+            }`}
+          >
             <video
               ref={localVideoRef}
               autoPlay
               playsInline
               muted
-              className="h-full w-full object-cover scale-x-[-1]"
+              className="pointer-events-none h-full w-full object-cover scale-x-[-1]"
             />
-            <div className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-white">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  videoUnlocked ? "bg-emerald-400" : "bg-amber-400"
-                }`}
-              />
-              <span>{videoUnlocked ? "LIVE" : "Only you see this"}</span>
+            <div className="pointer-events-none absolute top-1.5 left-1.5 flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[#F5EDE2]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#E5C17B]" />
+              <span>{videoUnlocked ? "LIVE" : "Only you"}</span>
             </div>
             {isMuted && (
-              <div className="absolute bottom-1.5 right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-rose-600 text-white shadow">
+              <div className="pointer-events-none absolute bottom-1.5 right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#7A2835] text-[#FFF1F3] shadow">
                 <MicOffIcon className="w-3.5 h-3.5" />
               </div>
             )}
           </div>
         )}
 
-        {/* SLIM CONVERSATION SPARK STRIP (auto-collapses after 10s) */}
+        {/* ORIGINAL 3-SECOND SPARK CARD (Compact, Coastal Dusk theme, hideable) */}
         <div className="absolute bottom-2.5 inset-x-3 z-20 flex justify-center">
-          {sparkExpanded ? (
-            <div className="w-full max-w-lg flex items-center gap-2 rounded-xl border border-slate-700/80 bg-[#0D1526]/90 backdrop-blur-md px-3 py-1.5 shadow-lg">
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-300">
-                  Conversation Spark
-                </p>
-                <p className="text-xs text-slate-100 leading-snug line-clamp-2">
-                  {CONVERSATION_SPARKS[sparkIndex]}
-                </p>
+          {sparkVisible ? (
+            <div className="w-full max-w-lg rounded-2xl border border-[#F0E2CC]/20 bg-[#141013]/88 backdrop-blur-md px-3.5 py-2.5 shadow-xl">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#A89A90] leading-tight shrink-0">
+                  3-Second
+                  <br />
+                  Spark
+                </span>
+
+                <span className="font-serif text-xl sm:text-2xl font-medium text-[#F8F1E7] tracking-tight truncate px-1">
+                  {SPARK_WORDS[sparkIndex]}
+                </span>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleNewWord}
+                    className="min-h-[44px] px-3.5 rounded-full border border-[#F0E2CC]/25 bg-[#1F191C] hover:bg-[#2B2327] text-xs font-medium text-[#F5EDE2] transition"
+                  >
+                    New Word
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSparkVisible(false)}
+                    className="min-h-[44px] px-3 rounded-xl text-xs font-medium text-[#A89A90] hover:text-[#F5EDE2] hover:bg-[#1F191C] transition"
+                  >
+                    Hide
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={handleNextSpark}
-                className="shrink-0 min-h-[44px] px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-amber-200"
-              >
-                Next
-              </button>
-              <button
-                type="button"
-                onClick={() => setSparkExpanded(false)}
-                aria-label="Hide conversation spark"
-                className="shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
-              >
-                <CloseIcon className="w-4 h-4" />
-              </button>
+
+              <p className="mt-1.5 text-[11px] text-[#B8AAA0] leading-snug">
+                Just a random thing. Say whatever pops into your head in the first 3 seconds.
+              </p>
             </div>
           ) : (
             <button
               type="button"
-              onClick={() => setSparkExpanded(true)}
-              className="min-h-[44px] px-4 rounded-full border border-slate-700 bg-[#0D1526]/90 backdrop-blur text-xs font-medium text-amber-200 hover:bg-slate-800 shadow-lg flex items-center gap-1.5"
+              onClick={() => setSparkVisible(true)}
+              className="min-h-[44px] px-4 rounded-full border border-[#F0E2CC]/20 bg-[#141013]/90 backdrop-blur text-xs font-medium text-[#E5C17B] hover:bg-[#1F191C] shadow-lg flex items-center gap-1.5"
             >
               <SparkIcon className="w-3.5 h-3.5" />
-              <span>Spark</span>
+              <span>3-Second Spark</span>
             </button>
           )}
         </div>
       </section>
 
-      {/* PINNED BOTTOM CONTROL DOCK (All buttons >= 44px tall) */}
-      <footer className="shrink-0 z-30 bg-[#0B1220] border-t border-slate-800/90 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      {/* PINNED BOTTOM CONTROL DOCK (Unified Coastal Dusk palette, all >= 44px) */}
+      <footer className="shrink-0 z-30 bg-[#141013] border-t border-[#F0E2CC]/15 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto max-w-xl flex flex-col gap-2">
           {/* Primary row: Mute, Preview/Video, Leave */}
           <div className="grid grid-cols-3 gap-2">
@@ -1141,10 +1269,10 @@ export default function CallPage() {
             <button
               type="button"
               onClick={handleToggleMute}
-              className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 ${
+              className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold border transition flex items-center justify-center gap-1.5 ${
                 isMuted
-                  ? "bg-rose-600 text-white hover:bg-rose-500"
-                  : "bg-slate-800 text-slate-100 hover:bg-slate-700 border border-slate-700"
+                  ? "bg-[#7A2835] border-[#B85766] text-[#FFF1F3] hover:bg-[#8E303F]"
+                  : "bg-[#1E181C] border-[#F0E2CC]/20 text-[#F5EDE2] hover:bg-[#292126]"
               }`}
             >
               {isMuted ? (
@@ -1165,10 +1293,10 @@ export default function CallPage() {
               <button
                 type="button"
                 onClick={handleTogglePreviewCam}
-                className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 border ${
+                className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold border transition flex items-center justify-center gap-1.5 ${
                   previewTrack
-                    ? "bg-amber-400/15 border-amber-400/50 text-amber-200"
-                    : "bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700"
+                    ? "bg-[#2C231A] border-[#A68653] text-[#F2D7A4]"
+                    : "bg-[#1E181C] border-[#F0E2CC]/20 text-[#F5EDE2] hover:bg-[#292126]"
                 }`}
               >
                 <CameraIcon className="w-4 h-4 shrink-0" />
@@ -1178,10 +1306,10 @@ export default function CallPage() {
               <button
                 type="button"
                 onClick={handleToggleHideLiveVideo}
-                className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 border ${
+                className={`min-h-[48px] rounded-xl px-3 text-xs sm:text-sm font-semibold border transition flex items-center justify-center gap-1.5 ${
                   localCameraHidden
-                    ? "bg-amber-400/15 border-amber-400/50 text-amber-200"
-                    : "bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700"
+                    ? "bg-[#2C231A] border-[#A68653] text-[#F2D7A4]"
+                    : "bg-[#1E181C] border-[#F0E2CC]/20 text-[#F5EDE2] hover:bg-[#292126]"
                 }`}
               >
                 <CameraIcon className="w-4 h-4 shrink-0" />
@@ -1193,14 +1321,14 @@ export default function CallPage() {
             <button
               type="button"
               onClick={() => handleLeaveCall("You left the call.")}
-              className="min-h-[48px] rounded-xl bg-rose-500/20 border border-rose-500/40 px-3 text-xs sm:text-sm font-semibold text-rose-200 hover:bg-rose-500/30 transition flex items-center justify-center gap-1.5"
+              className="min-h-[48px] rounded-xl bg-[#291519] border border-[#6E3943] px-3 text-xs sm:text-sm font-semibold text-[#EBB8BF] hover:bg-[#3A1E24] transition flex items-center justify-center gap-1.5"
             >
               <LeaveIcon className="w-4 h-4 shrink-0" />
               <span>Leave</span>
             </button>
           </div>
 
-          {/* Mutual consent row: Request Video (until unlocked) + Request Profile Reveal */}
+          {/* Mutual consent row: Request Video + Request Profile Reveal */}
           <div className={`grid gap-2 ${videoUnlocked ? "grid-cols-1" : "grid-cols-2"}`}>
             {!videoUnlocked && (
               <button
@@ -1208,8 +1336,8 @@ export default function CallPage() {
                 onClick={handleVideoConsentAction}
                 className={`min-h-[46px] rounded-xl px-3 text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 ${
                   videoRequestedByMe
-                    ? "bg-slate-800 border border-amber-400/50 text-amber-200"
-                    : "bg-amber-400 text-slate-950 hover:bg-amber-300"
+                    ? "bg-[#2C231A] border border-[#E5C17B]/60 text-[#F2D7A4]"
+                    : "bg-[#E5C17B] text-[#1A1310] hover:bg-[#EED093]"
                 }`}
               >
                 {videoRequestedByMe ? (
@@ -1225,10 +1353,12 @@ export default function CallPage() {
               onClick={handleRevealConsentAction}
               className={`min-h-[46px] rounded-xl px-3 text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 ${
                 vaultUnlocked
-                  ? "bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/30"
+                  ? "bg-[#2C231A] border border-[#E5C17B]/60 text-[#F2D7A4] hover:bg-[#3A2E22]"
                   : revealRequestedByMe
-                  ? "bg-slate-800 border border-emerald-400/50 text-emerald-200"
-                  : "bg-indigo-500 text-white hover:bg-indigo-400"
+                  ? "bg-[#2C231A] border border-[#E5C17B]/60 text-[#F2D7A4]"
+                  : videoUnlocked
+                  ? "bg-[#E5C17B] text-[#1A1310] hover:bg-[#EED093]"
+                  : "bg-[#221B1F] border border-[#E5C17B]/45 text-[#F3E5CE] hover:bg-[#2E252A]"
               }`}
             >
               {vaultUnlocked ? (
@@ -1245,24 +1375,26 @@ export default function CallPage() {
 
       {/* SAFETY & REPORT SHEET */}
       {showSafetySheet && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0F172A] p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#F0E2CC]/20 bg-[#171215] p-5 shadow-2xl">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-rose-300">
+              <div className="flex items-center gap-2 text-[#EBB8BF]">
                 <ShieldIcon className="w-5 h-5" />
-                <h3 className="text-base font-semibold text-white">Safety Controls</h3>
+                <h3 className="font-serif text-lg font-medium text-[#F8F1E7]">
+                  Safety Controls
+                </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setShowSafetySheet(false)}
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#A89A90] hover:bg-[#241C20] hover:text-[#F5EDE2]"
                 aria-label="Close safety menu"
               >
                 <CloseIcon className="w-5 h-5" />
               </button>
             </div>
 
-            <p className="mt-1.5 text-xs text-slate-400">
+            <p className="mt-1.5 text-xs text-[#A89A90]">
               Reporting immediately disconnects the call and blocks this person from matching with you again.
             </p>
 
@@ -1273,7 +1405,7 @@ export default function CallPage() {
                   type="button"
                   disabled={reportSubmitting}
                   onClick={() => handleReportAndBlock(reason)}
-                  className="w-full min-h-[46px] rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 text-left text-sm font-medium text-rose-100 hover:bg-rose-500/20 transition"
+                  className="w-full min-h-[46px] rounded-xl border border-[#6E3943] bg-[#291519] px-4 text-left text-sm font-medium text-[#F2CFD4] hover:bg-[#3A1E24] transition"
                 >
                   Report and Block: {reason}
                 </button>
@@ -1283,7 +1415,7 @@ export default function CallPage() {
             <button
               type="button"
               onClick={() => handleLeaveCall("You left the call safely.")}
-              className="mt-4 w-full min-h-[46px] rounded-xl border border-slate-700 bg-slate-800 text-sm font-semibold text-slate-100 hover:bg-slate-700"
+              className="mt-4 w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#221B1E] text-sm font-semibold text-[#F5EDE2] hover:bg-[#2E2529]"
             >
               Just Leave Call
             </button>
@@ -1293,21 +1425,21 @@ export default function CallPage() {
 
       {/* STAGE 2 PRIVATE VAULT MODAL */}
       {showVaultModal && vaultUnlocked && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-emerald-400/40 bg-[#0F172A] p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#E5C17B]/40 bg-[#171215] p-5 shadow-2xl">
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-[#E5C17B]">
                   Mutual Reveal Unlocked
                 </span>
-                <h3 className="text-lg font-semibold text-white">
+                <h3 className="font-serif text-xl font-medium text-[#F8F1E7]">
                   {partnerVault?.name || partnerName || "Your Match"}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setShowVaultModal(false)}
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-[#A89A90] hover:bg-[#241C20] hover:text-[#F5EDE2]"
                 aria-label="Close profile vault"
               >
                 <CloseIcon className="w-5 h-5" />
@@ -1315,23 +1447,23 @@ export default function CallPage() {
             </div>
 
             <div className="mt-4 space-y-2.5 text-sm">
-              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
-                <p className="text-[11px] uppercase tracking-wider text-slate-400">Area</p>
-                <p className="text-slate-100 mt-0.5">
+              <div className="rounded-xl border border-[#F0E2CC]/15 bg-[#1F181C] p-3">
+                <p className="text-[11px] uppercase tracking-wider text-[#A89A90]">Area</p>
+                <p className="text-[#F5EDE2] mt-0.5">
                   {partnerVault?.area || "Southwest Florida"}
                 </p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
-                <p className="text-[11px] uppercase tracking-wider text-slate-400">Occupation</p>
-                <p className="text-slate-100 mt-0.5">
+              <div className="rounded-xl border border-[#F0E2CC]/15 bg-[#1F181C] p-3">
+                <p className="text-[11px] uppercase tracking-wider text-[#A89A90]">Occupation</p>
+                <p className="text-[#F5EDE2] mt-0.5">
                   {partnerVault?.occupation || "Founding Cohort Member"}
                 </p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
-                <p className="text-[11px] uppercase tracking-wider text-slate-400">
+              <div className="rounded-xl border border-[#F0E2CC]/15 bg-[#1F181C] p-3">
+                <p className="text-[11px] uppercase tracking-wider text-[#A89A90]">
                   Favorite Local First-Meet Spot
                 </p>
-                <p className="text-slate-100 mt-0.5">
+                <p className="text-[#F5EDE2] mt-0.5">
                   {partnerVault?.favoriteSpot || "Waterfront coffee or sunset walk"}
                 </p>
               </div>
@@ -1340,7 +1472,7 @@ export default function CallPage() {
             <button
               type="button"
               onClick={() => setShowVaultModal(false)}
-              className="mt-4 w-full min-h-[46px] rounded-xl bg-emerald-400 text-sm font-semibold text-slate-950 hover:bg-emerald-300"
+              className="mt-4 w-full min-h-[46px] rounded-xl bg-[#E5C17B] text-sm font-semibold text-[#1A1310] hover:bg-[#EED093]"
             >
               Back to Call
             </button>
@@ -1351,7 +1483,7 @@ export default function CallPage() {
   );
 }
 
-// ---------------- INLINE SVG ICONS (Zero extra packages needed) ----------------
+// ---------------- INLINE SVG ICONS ----------------
 
 function MicOnIcon({ className }: { className?: string }) {
   return (
