@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import EditPreferencesModal from "@/components/EditPreferencesModal";
 import {
   ConnectionQuality,
   ConnectionState,
@@ -44,6 +45,10 @@ type UserProfile = {
   max_drive_miles: number;
   smoking: string | null;
   occupation: string | null;
+  intents?: string[] | null;
+  wants_kids?: string | null;
+  partner_kids_pref?: string | null;
+  bio_prompts?: Array<{ question?: string; answer?: string }> | null;
 };
 
 type MatchRecord = {
@@ -144,6 +149,7 @@ export default function CallPage() {
   const [waitingCount, setWaitingCount] = useState(1);
   const [allowRematch, setAllowRematch] = useState(true);
   const [showManualRoom, setShowManualRoom] = useState(false);
+  const [showEditPrefs, setShowEditPrefs] = useState(false);
   const [manualRoomCode, setManualRoomCode] = useState("coastal-dusk-test");
   const [joining, setJoining] = useState(false);
   const [roomError, setRoomError] = useState<string | null>(null);
@@ -1466,17 +1472,26 @@ export default function CallPage() {
             )}
 
             {/* Profile matching summary */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
-                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Your Area</p>
-                <p className="mt-0.5 text-[#F5EDE2]">{userProfile.area_label}</p>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Your Area</p>
+                  <p className="mt-0.5 text-[#F5EDE2]">{userProfile.area_label}</p>
+                </div>
+                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Match Range</p>
+                  <p className="mt-0.5 text-[#F5EDE2]">
+                    Ages {userProfile.min_age_pref}-{userProfile.max_age_pref}, {userProfile.max_drive_miles} mi
+                  </p>
+                </div>
               </div>
-              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
-                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Match Range</p>
-                <p className="mt-0.5 text-[#F5EDE2]">
-                  Ages {userProfile.min_age_pref}-{userProfile.max_age_pref}, {userProfile.max_drive_miles} mi
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowEditPrefs(true)}
+                className="w-full min-h-[42px] rounded-xl border border-[#E5C17B]/35 bg-[#221B17] px-3 text-xs font-semibold text-[#F0D9AE] hover:bg-[#2E251F] transition"
+              >
+                Edit Preferences &amp; Vault Details
+              </button>
             </div>
 
             {!inQueue ? (

@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     const { data: profile, error: profileErr } = await supabase
       .from("profiles")
       .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, intent, min_age_pref, max_age_pref, max_drive_miles, smoking, occupation"
+        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
       )
       .eq("id", authData.user.id)
       .maybeSingle();
