@@ -11,16 +11,46 @@ function formatHeight(inches: number | null): string {
 
 function formatSmoking(val: string | null): string {
   if (val === "non_smoker" || val === "never") return "Non-smoker";
+  if (val === "tobacco_vape" || val === "smoker" || val === "regularly" || val === "occasionally") {
+    return "Tobacco / vape";
+  }
   if (val === "cannabis_only") return "Cannabis only";
-  if (val === "smoker" || val === "regularly" || val === "occasionally") return "Smoker";
+  if (val === "both_tobacco_cannabis") return "Tobacco & cannabis";
   return "Not listed";
 }
 
-function formatIntent(val: string | null): string {
-  if (val === "long_term") return "Long-term relationship";
-  if (val === "open_to_long") return "Open to long-term";
-  if (val === "casual") return "Casual dating";
+function formatIntents(intents: string[] | null, fallbackIntent: string | null): string {
+  const labels: Record<string, string> = {
+    long_term: "Long-term",
+    casual: "Casual",
+    seeing_where_it_goes: "Seeing where it goes",
+    open_to_long: "Open to long-term",
+  };
+  if (Array.isArray(intents) && intents.length > 0) {
+    return intents.map((i) => labels[i] || i).join(", ");
+  }
+  if (fallbackIntent) return labels[fallbackIntent] || fallbackIntent;
   return "Not listed";
+}
+
+function formatKids(wantsKids: string | null, partnerPref: string | null): string {
+  const mineLabels: Record<string, string> = {
+    have_open_to_more: "Have kids, open to more",
+    have_and_done: "Have kids, done",
+    no_want: "No kids, want them",
+    no_open: "No kids, open",
+    no_none: "No kids, do not want",
+    yes: "Want kids",
+    open: "Open to kids",
+    no: "Do not want kids",
+  };
+  const prefLabels: Record<string, string> = {
+    open_to_kids: "Open to partner with kids",
+    prefer_no_kids: "Prefer partner without kids",
+  };
+  const mine = wantsKids ? mineLabels[wantsKids] || wantsKids : "Not listed";
+  const pref = partnerPref ? prefLabels[partnerPref] : "";
+  return pref ? `${mine} (${pref})` : mine;
 }
 
 export async function GET(request: Request) {
@@ -57,14 +87,13 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: msgErr.message }, { status: 500 });
       }
 
-      // Unlock the partner's real Private Vault profile inside the active mutual match chat
       let partnerProfile = null;
       const otherId = identity === match.user_a ? match.user_b : match.user_a;
       if (otherId && isUuid(otherId)) {
         const { data: p } = await supabase
           .from("profiles")
           .select(
-            "display_name, birth_year, area_label, occupation, height_inches, smoking, intent, bio_prompts"
+            "display_name, birth_year, area_label, occupation, height_inches, smoking, intent, intents, wants_kids, partner_kids_pref, bio_prompts"
           )
           .eq("id", otherId)
           .maybeSingle();
@@ -81,7 +110,8 @@ export async function GET(request: Request) {
             occupation: p.occupation || "Not listed",
             height: formatHeight(p.height_inches),
             smoking: formatSmoking(p.smoking),
-            intent: formatIntent(p.intent),
+            intent: formatIntents(p.intents, p.intent),
+            kids: formatKids(p.wants_kids, p.partner_kids_pref),
             firstMeetSpot: prompts[0]?.answer || "Ask in chat",
           };
         }

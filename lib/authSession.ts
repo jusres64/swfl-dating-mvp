@@ -16,10 +16,12 @@ export interface AuthProfile {
   approx_lat: number;
   approx_lng: number;
   intent: string;
+  intents: string[] | null;
   min_age_pref: number;
   max_age_pref: number;
   max_drive_miles: number;
   wants_kids: string | null;
+  partner_kids_pref: string | null;
   smoking: string | null;
   occupation: string | null;
   height_inches: number | null;
@@ -109,7 +111,7 @@ export async function getAuthenticatedSession(): Promise<{
     const { data: profile, error } = await supabase
       .from("profiles")
       .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, min_age_pref, max_age_pref, max_drive_miles, wants_kids, smoking, occupation, height_inches, bio_prompts"
+        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
       )
       .eq("id", verified.uid)
       .maybeSingle();

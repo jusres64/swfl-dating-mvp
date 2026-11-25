@@ -4,17 +4,17 @@ import { useState } from 'react';
 import Link from 'next/link';
 
 const SWFL_AREA_OPTIONS = [
-  'Punta Gorda area',
-  'Port Charlotte area',
-  'North Port area',
-  'Venice area',
-  'Sarasota area',
-  'Bradenton area',
-  'Fort Myers area',
-  'Cape Coral area',
-  'Bonita Springs area',
-  'Naples area',
+  'Charlotte County (Punta Gorda / Port Charlotte)',
+  'Sarasota & Manatee (Sarasota / Bradenton / Venice / North Port)',
+  'Lee County (Fort Myers / Cape Coral / Bonita Springs)',
+  'Collier County (Naples / Marco Island)',
 ];
+
+const INTENT_OPTIONS = [
+  { value: 'long_term', label: 'Long-term relationship' },
+  { value: 'casual', label: 'Casual dating' },
+  { value: 'seeing_where_it_goes', label: 'Just seeing where it goes' },
+] as const;
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -42,19 +42,26 @@ export default function JoinPage() {
     cap: number;
   } | null>(null);
 
-  // Step 1: Basics & SWFL Area (Default 1997 = 29 yrs old)
+  // Step 1: Basics & SWFL Corridor (Default 1997 = 29 yrs old)
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [birthYear, setBirthYear] = useState('1997');
   const [gender, setGender] = useState<'man' | 'woman'>('woman');
-  const [areaLabel, setAreaLabel] = useState('Punta Gorda area');
+  const [areaLabel, setAreaLabel] = useState(SWFL_AREA_OPTIONS[0]);
 
-  // Step 2: Essential Compatibility (Auto +/- 10 years from birth year)
+  // Step 2: Essential Compatibility
   const initialPrefs = computeAgePrefs('1997');
-  const [intent, setIntent] = useState<'long_term' | 'open_to_long' | 'casual'>('long_term');
-  const [wantsKids, setWantsKids] = useState<'yes' | 'no' | 'open' | 'have_and_done'>('open');
-  const [smoking, setSmoking] = useState<'non_smoker' | 'smoker' | 'cannabis_only'>('non_smoker');
+  const [intents, setIntents] = useState<string[]>(['long_term']);
+  const [wantsKids, setWantsKids] = useState<
+    'have_open_to_more' | 'have_and_done' | 'no_want' | 'no_open' | 'no_none'
+  >('no_open');
+  const [partnerKidsPref, setPartnerKidsPref] = useState<'open_to_kids' | 'prefer_no_kids'>(
+    'open_to_kids'
+  );
+  const [smoking, setSmoking] = useState<
+    'non_smoker' | 'tobacco_vape' | 'cannabis_only' | 'both_tobacco_cannabis'
+  >('non_smoker');
   const [minAgePref, setMinAgePref] = useState(initialPrefs.min);
   const [maxAgePref, setMaxAgePref] = useState(initialPrefs.max);
   const [maxDriveMiles, setMaxDriveMiles] = useState('45');
@@ -74,6 +81,12 @@ export default function JoinPage() {
       setMinAgePref(next.min);
       setMaxAgePref(next.max);
     }
+  };
+
+  const toggleIntent = (val: string) => {
+    setIntents((prev) =>
+      prev.includes(val) ? prev.filter((item) => item !== val) : [...prev, val]
+    );
   };
 
   const handleNextStep1 = () => {
@@ -97,6 +110,15 @@ export default function JoinPage() {
       return;
     }
     setStep(2);
+  };
+
+  const handleNextStep2 = () => {
+    setErrorMsg(null);
+    if (intents.length === 0) {
+      setErrorMsg('Please check at least one option under "What are you open to?".');
+      return;
+    }
+    setStep(3);
   };
 
   const handleSubmit = async () => {
@@ -123,18 +145,16 @@ export default function JoinPage() {
           birthYear: Number(birthYear),
           gender,
           areaLabel,
-          residencyStatus: 'year_round',
-          openToSeasonal: true,
-          intent,
+          intents,
           minAgePref: Number(minAgePref),
           maxAgePref: Number(maxAgePref),
           maxDriveMiles: Number(maxDriveMiles),
           wantsKids,
+          partnerKidsPref,
           smoking,
           occupation: occupation.trim(),
           heightInches: totalHeightInches,
           firstMeetSpot: firstMeetSpot.trim(),
-          firstMeetPlace: null,
         }),
       });
 
@@ -192,7 +212,7 @@ export default function JoinPage() {
           <div className="rounded-2xl border border-[#F5F0EB]/10 bg-[#161412] p-4 text-left text-xs space-y-1.5 text-[#C2B9B0]">
             <p className="font-medium text-[#F5F0EB]">Next Steps</p>
             <p>&bull; Sunday Live Drops run from 8:00 PM to 9:00 PM EST.</p>
-            <p>&bull; You can test your mic and preview the voice-first room right now.</p>
+            <p>&bull; You are signed in and ready to enter the Green Room right now.</p>
           </div>
 
           <div className="space-y-2.5">
@@ -200,7 +220,7 @@ export default function JoinPage() {
               href="/call"
               className="block w-full rounded-2xl bg-[#D96B52] hover:bg-[#c85e46] py-3.5 text-sm font-semibold text-[#F5F0EB] transition"
             >
-              Preview the Live Call Room
+              Enter the Green Room
             </Link>
             <Link
               href="/"
@@ -240,12 +260,22 @@ export default function JoinPage() {
 
         <div className="rounded-3xl border border-[#F5F0EB]/12 bg-[#231F1C]/92 backdrop-blur-xl p-7 space-y-6 shadow-2xl">
           {errorMsg && (
-            <div className="rounded-2xl border border-[#C85A5A]/50 bg-[#C85A5A]/15 px-4 py-3 text-xs text-[#F5F0EB] break-words">
-              {errorMsg}
+            <div className="rounded-2xl border border-[#C85A5A]/50 bg-[#C85A5A]/15 px-4 py-3 text-xs text-[#F5F0EB] break-words space-y-1.5">
+              <p>{errorMsg}</p>
+              {errorMsg.toLowerCase().includes('already exists') && (
+                <div className="flex gap-3 pt-1">
+                  <Link href="/login" className="text-[#E5C185] underline font-medium">
+                    Go to Sign In
+                  </Link>
+                  <Link href="/reset-password" className="text-[#E5C185] underline font-medium">
+                    Reset Password
+                  </Link>
+                </div>
+              )}
             </div>
           )}
 
-          {/* STEP 1: BASICS & SWFL AREA */}
+          {/* STEP 1: BASICS & SWFL CORRIDOR */}
           {step === 1 && (
             <div className="space-y-4">
               <div className="space-y-1.5">
@@ -302,7 +332,7 @@ export default function JoinPage() {
 
                 <div>
                   <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                    General SWFL Area
+                    Southwest Florida County / Corridor
                   </label>
                   <select
                     value={areaLabel}
@@ -329,7 +359,7 @@ export default function JoinPage() {
                     className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
                   />
                   <p className="mt-1 text-[11px] text-[#C2B9B0]">
-                    Private. Used only for Sunday 8:00 PM Drop reminders and waitlist updates.
+                    Private. Used only for Sunday 8:00 PM Drop reminders and account recovery.
                   </p>
                 </div>
 
@@ -353,6 +383,13 @@ export default function JoinPage() {
               >
                 Continue to Compatibility
               </button>
+
+              <p className="text-center text-xs text-[#C2B9B0]">
+                Already reserved a spot?{' '}
+                <Link href="/login" className="text-[#E5C185] underline hover:text-[#F2D7A4]">
+                  Sign in
+                </Link>
+              </p>
             </div>
           )}
 
@@ -365,58 +402,100 @@ export default function JoinPage() {
                 </p>
                 <h1 className="font-serif text-2xl text-[#F5F0EB]">Essential compatibility</h1>
                 <p className="text-xs text-[#C2B9B0] leading-relaxed">
-                  We use these to pair you with people who want the same things, so you never waste a conversation on basic mismatches.
+                  Check everything you are open to. Two people can match as long as they share at least one intention.
                 </p>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-3.5">
+                {/* Multi-select Intentions */}
                 <div>
-                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                    Relationship Intention
+                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1.5">
+                    What are you open to? (Pick one or more)
                   </label>
-                  <select
-                    value={intent}
-                    onChange={(e) => setIntent(e.target.value as any)}
-                    className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
-                  >
-                    <option value="long_term">Long-term relationship</option>
-                    <option value="open_to_long">Open to long-term</option>
-                    <option value="casual">Casual dating</option>
-                  </select>
+                  <div className="space-y-2">
+                    {INTENT_OPTIONS.map((opt) => {
+                      const checked = intents.includes(opt.value);
+                      return (
+                        <label
+                          key={opt.value}
+                          className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 text-sm cursor-pointer transition ${
+                            checked
+                              ? 'border-[#E5C185]/60 bg-[#2C241B] text-[#F8F1E7]'
+                              : 'border-[#F5F0EB]/12 bg-[#161412] text-[#C2B9B0] hover:border-[#F5F0EB]/25'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleIntent(opt.value)}
+                            className="h-4 w-4 accent-[#E5C185]"
+                          />
+                          <span>{opt.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                {/* Split Kids Questions */}
+                <div className="space-y-2.5">
                   <div>
                     <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                      Children
+                      Your Kids Situation
                     </label>
                     <select
                       value={wantsKids}
                       onChange={(e) => setWantsKids(e.target.value as any)}
                       className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
                     >
-                      <option value="open">Open to kids</option>
-                      <option value="yes">Want kids</option>
+                      <option value="no_open">No kids, open to them</option>
+                      <option value="no_want">No kids, want them</option>
+                      <option value="no_none">No kids, do not want them</option>
+                      <option value="have_open_to_more">Have kids, open to more</option>
                       <option value="have_and_done">Have kids, done</option>
-                      <option value="no">Do not want kids</option>
                     </select>
                   </div>
+
                   <div>
                     <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                      Smoking
+                      Dating Someone With Kids
                     </label>
                     <select
-                      value={smoking}
+                      value={partnerKidsPref}
                       onChange={(e) =>
-                        setSmoking(e.target.value as 'non_smoker' | 'smoker' | 'cannabis_only')
+                        setPartnerKidsPref(e.target.value as 'open_to_kids' | 'prefer_no_kids')
                       }
                       className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
                     >
-                      <option value="non_smoker">Non-smoker</option>
-                      <option value="smoker">Smoker</option>
-                      <option value="cannabis_only">Cannabis only</option>
+                      <option value="open_to_kids">Open to dating someone with kids</option>
+                      <option value="prefer_no_kids">Prefer someone without kids</option>
                     </select>
                   </div>
+                </div>
+
+                {/* 4 Smoking & Cannabis Options */}
+                <div>
+                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
+                    Smoking &amp; Cannabis
+                  </label>
+                  <select
+                    value={smoking}
+                    onChange={(e) =>
+                      setSmoking(
+                        e.target.value as
+                          | 'non_smoker'
+                          | 'tobacco_vape'
+                          | 'cannabis_only'
+                          | 'both_tobacco_cannabis'
+                      )
+                    }
+                    className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
+                  >
+                    <option value="non_smoker">Non-smoker</option>
+                    <option value="tobacco_vape">Tobacco / vape</option>
+                    <option value="cannabis_only">Cannabis only</option>
+                    <option value="both_tobacco_cannabis">Both tobacco &amp; cannabis</option>
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2.5">
@@ -464,7 +543,7 @@ export default function JoinPage() {
                   Back
                 </button>
                 <button
-                  onClick={() => setStep(3)}
+                  onClick={handleNextStep2}
                   className="flex-1 rounded-2xl bg-[#D96B52] hover:bg-[#c85e46] py-3.5 text-sm font-semibold text-[#F5F0EB] transition"
                 >
                   Continue to Vault

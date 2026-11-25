@@ -14,6 +14,28 @@ function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): 
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function getEffectiveIntents(p: AuthProfile): Set<string> {
+  if (Array.isArray(p.intents) && p.intents.length > 0) {
+    return new Set(p.intents);
+  }
+  if (p.intent === "open_to_long") {
+    return new Set(["long_term", "seeing_where_it_goes", "casual"]);
+  }
+  if (p.intent === "casual") {
+    return new Set(["casual"]);
+  }
+  return new Set(["long_term"]);
+}
+
+function hasIntentOverlap(a: AuthProfile, b: AuthProfile): boolean {
+  const setA = getEffectiveIntents(a);
+  const setB = getEffectiveIntents(b);
+  for (const item of setA) {
+    if (setB.has(item)) return true;
+  }
+  return false;
+}
+
 export async function POST(request: Request) {
   try {
     const session = await getAuthenticatedSession();
@@ -36,7 +58,6 @@ export async function POST(request: Request) {
     const me = session.profile;
     const supabase = getSupabaseService();
 
-    // Leave queue or finish call cleanly
     if (action === "leave" || action === "finish_call") {
       await supabase.from("mvp_queue").delete().eq("user_id", me.id);
       return NextResponse.json({ status: "idle" });
@@ -45,7 +66,7 @@ export async function POST(request: Request) {
     const nowIso = new Date().toISOString();
     const staleCutoff = new Date(Date.now() - 45 * 1000).toISOString();
 
-    // 1. Check if someone already matched with us in the last few seconds
+    // 1. Check if someone already matched with us
     const { data: myQueueRow } = await supabase
       .from("mvp_queue")
       .select("status, matched_with, room_name")
@@ -59,7 +80,6 @@ export async function POST(request: Request) {
         .eq("id", myQueueRow.matched_with)
         .maybeSingle();
 
-      // Mark as in_call so we don't re-trigger the same room later
       await supabase
         .from("mvp_queue")
         .update({ status: "in_call", last_seen_at: nowIso })
@@ -76,7 +96,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2. Register or heartbeat our waiting presence
+    // 2. Heartbeat waiting presence
     await supabase.from("mvp_queue").upsert(
       {
         user_id: me.id,
@@ -90,7 +110,7 @@ export async function POST(request: Request) {
       { onConflict: "user_id" }
     );
 
-    // 3. Remove abandoned waiting rows older than 45s
+    // 3. Clean stale waiting rows
     await supabase
       .from("mvp_queue")
       .delete()
@@ -123,11 +143,11 @@ export async function POST(request: Request) {
       });
     }
 
-    // 5. Fetch candidate profiles, safety blocks, suspensions, and recent call history
+    // 5. Fetch candidate profiles, blocks, suspensions, and recent history
     const { data: candidateProfiles } = await supabase
       .from("profiles")
       .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, min_age_pref, max_age_pref, max_drive_miles, wants_kids, smoking, occupation, height_inches, bio_prompts"
+        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
       )
       .in("id", waitingIds)
       .neq("cohort_status", "banned");
@@ -152,7 +172,6 @@ export async function POST(request: Request) {
       .select("identity");
     const suspendedSet = new Set((suspendedRows || []).map((r) => r.identity.toLowerCase()));
 
-    // Check who we have already called recently (last 6 hours)
     const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
     const { data: historyRows } = await supabase
       .from("mvp_call_history")
@@ -165,7 +184,7 @@ export async function POST(request: Request) {
       recentPartnerIds.add(h.user_a === me.id ? h.user_b : h.user_a);
     }
 
-    // 6. Filter compatible candidates (age range + SWFL drive distance + zero safety blocks)
+    // 6. Filter by age, SWFL drive distance, overlapping intentions, and zero blocks
     const currentYear = new Date().getFullYear();
     const myAge = currentYear - me.birth_year;
     const profilesById = new Map<string, AuthProfile>();
@@ -194,6 +213,8 @@ export async function POST(request: Request) {
 
       if (!ageCompatible) continue;
 
+      if (!hasIntentOverlap(me, cand)) continue;
+
       const miles = distanceMiles(
         me.approx_lat,
         me.approx_lng,
@@ -218,7 +239,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // 7. Atomically claim the selected waiting partner
+    // 7. Atomically claim the selected partner
     const roomName = `drop-${crypto.randomUUID().slice(0, 8)}`;
     const { data: claimed } = await supabase
       .from("mvp_queue")
@@ -239,7 +260,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Mark ourselves as in_call and log call history
     await supabase
       .from("mvp_queue")
       .update({

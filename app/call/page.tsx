@@ -38,6 +38,7 @@ type UserProfile = {
   birth_year: number;
   area_label: string;
   intent: string;
+  kids?: string;
   min_age_pref: number;
   max_age_pref: number;
   max_drive_miles: number;
@@ -64,6 +65,7 @@ type PartnerVaultProfile = {
   height: string;
   smoking: string;
   intent: string;
+  kids?: string;
   firstMeetSpot: string;
 };
 
@@ -1377,9 +1379,14 @@ export default function CallPage() {
               </div>
 
               <div>
-                <label className="block text-[11px] font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
-                  Password
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#A89A90]">
+                    Password
+                  </label>
+                  <Link href="/reset-password" className="text-xs text-[#E5C17B] hover:underline">
+                    Forgot password?
+                  </Link>
+                </div>
                 <input
                   type="password"
                   required
@@ -1728,6 +1735,12 @@ export default function CallPage() {
                   <p className="text-[10px] uppercase tracking-wider text-[#E5C17B]">Favorite First-Meet Spot</p>
                   <p className="mt-0.5 text-[#F8F1E7]">{partnerVault.firstMeetSpot}</p>
                 </div>
+                {partnerVault.kids && (
+                  <div className="col-span-2 rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Kids</p>
+                    <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.kids}</p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="mx-auto max-w-xl text-xs text-[#A89A90]">

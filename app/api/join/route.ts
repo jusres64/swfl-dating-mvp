@@ -3,6 +3,12 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { attachSessionCookie } from '@/lib/authSession';
 
 const SWFL_AREAS: Record<string, { lat: number; lng: number }> = {
+  // 4 clear SWFL corridors
+  'Charlotte County (Punta Gorda / Port Charlotte)': { lat: 26.953, lng: -82.068 },
+  'Sarasota & Manatee (Sarasota / Bradenton / Venice / North Port)': { lat: 27.27, lng: -82.48 },
+  'Lee County (Fort Myers / Cape Coral / Bonita Springs)': { lat: 26.58, lng: -81.88 },
+  'Collier County (Naples / Marco Island)': { lat: 26.142, lng: -81.7948 },
+  // Legacy city fallbacks
   'Punta Gorda area': { lat: 26.9298, lng: -82.0454 },
   'Port Charlotte area': { lat: 26.9762, lng: -82.0906 },
   'North Port area': { lat: 27.0442, lng: -82.2359 },
@@ -12,38 +18,48 @@ const SWFL_AREAS: Record<string, { lat: number; lng: number }> = {
   'Fort Myers area': { lat: 26.6406, lng: -81.8723 },
   'Cape Coral area': { lat: 26.5629, lng: -81.9495 },
   'Bonita Springs area': { lat: 26.3398, lng: -81.7787 },
-  'Naples area': { lat: 26.1420, lng: -81.7948 },
+  'Naples area': { lat: 26.142, lng: -81.7948 },
 };
 
-const VALID_SMOKING = new Set(['non_smoker', 'smoker', 'cannabis_only']);
+const VALID_SMOKING = new Set([
+  'non_smoker',
+  'tobacco_vape',
+  'cannabis_only',
+  'both_tobacco_cannabis',
+]);
+const VALID_INTENTS = new Set(['long_term', 'casual', 'seeing_where_it_goes']);
+const VALID_KIDS = new Set([
+  'have_open_to_more',
+  'have_and_done',
+  'no_want',
+  'no_open',
+  'no_none',
+]);
+const VALID_PARTNER_KIDS = new Set(['open_to_kids', 'prefer_no_kids']);
+
 const COHORT_CAP_PER_GENDER = 50;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function formatError(step: string, err: any): string {
   if (!err) return `${step}: Unknown error`;
+  const msg = String(err.message || '');
+  if (msg.toLowerCase().includes('already been registered') || msg.toLowerCase().includes('already exists')) {
+    return 'An account with this email already exists. Go to Sign In or use Forgot Password to reset it.';
+  }
   const parts = [
     err.message,
     err.code ? `code=${err.code}` : '',
     err.details ? `details=${err.details}` : '',
     err.hint ? `hint=${err.hint}` : '',
-    err.status ? `status=${err.status}` : '',
   ].filter(Boolean);
-
-  if (parts.length > 0) {
-    return `${step}: ${parts.join(' | ')}`;
-  }
-  try {
-    return `${step}: ${JSON.stringify(err)}`;
-  } catch {
-    return `${step}: Unexpected error`;
-  }
+  return parts.length > 0 ? `${step}: ${parts.join(' | ')}` : `${step}: Unexpected error`;
 }
 
 export async function POST(req: NextRequest) {
   try {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return NextResponse.json(
-        { error: 'Server config error: Missing Supabase URL or Service Role Key in .env.local.' },
+        { error: 'Server config error: Missing Supabase URL or Service Role Key.' },
         { status: 500 }
       );
     }
@@ -56,21 +72,20 @@ export async function POST(req: NextRequest) {
       birthYear,
       gender,
       areaLabel,
-      residencyStatus,
-      openToSeasonal,
+      intents,
       intent,
       minAgePref,
       maxAgePref,
       maxDriveMiles,
       wantsKids,
+      partnerKidsPref,
       smoking,
       occupation,
       heightInches,
       firstMeetSpot,
-      firstMeetPlace,
     } = body;
 
-    if (!email || !password || !displayName || !birthYear || !gender || !areaLabel || !intent) {
+    if (!email || !password || !displayName || !birthYear || !gender || !areaLabel) {
       return NextResponse.json({ error: 'Please complete all required fields.' }, { status: 400 });
     }
 
@@ -87,7 +102,34 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const cleanIntents: string[] = Array.isArray(intents)
+      ? intents.filter((i: unknown) => typeof i === 'string' && VALID_INTENTS.has(i))
+      : [];
+
+    if (cleanIntents.length === 0) {
+      return NextResponse.json(
+        { error: 'Please select at least one relationship intention.' },
+        { status: 400 }
+      );
+    }
+
+    // Backwards-compatible primary intent column
+    const primaryIntent = cleanIntents.includes('long_term')
+      ? cleanIntents.length > 1
+        ? 'open_to_long'
+        : 'long_term'
+      : cleanIntents.includes('seeing_where_it_goes')
+      ? 'open_to_long'
+      : intent === 'long_term' || intent === 'open_to_long' || intent === 'casual'
+      ? intent
+      : 'casual';
+
     const cleanSmoking = VALID_SMOKING.has(String(smoking)) ? String(smoking) : 'non_smoker';
+    const cleanKids = VALID_KIDS.has(String(wantsKids)) ? String(wantsKids) : 'no_open';
+    const cleanPartnerKids = VALID_PARTNER_KIDS.has(String(partnerKidsPref))
+      ? String(partnerKidsPref)
+      : 'open_to_kids';
+
     const cleanEmail = String(email).trim().toLowerCase();
     if (!EMAIL_REGEX.test(cleanEmail)) {
       return NextResponse.json(
@@ -103,7 +145,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const coords = SWFL_AREAS[areaLabel] || SWFL_AREAS['Punta Gorda area'];
+    const coords =
+      SWFL_AREAS[areaLabel] || SWFL_AREAS['Charlotte County (Punta Gorda / Port Charlotte)'];
 
     const { count: activeCount, error: countError } = await supabaseAdmin
       .from('profiles')
@@ -138,7 +181,6 @@ export async function POST(req: NextRequest) {
       {
         question: 'Favorite first-meet spot',
         answer: cleanSpot,
-        place: firstMeetPlace || null,
       },
     ];
 
@@ -151,13 +193,13 @@ export async function POST(req: NextRequest) {
       area_label: areaLabel,
       approx_lat: coords.lat,
       approx_lng: coords.lng,
-      residency_status: residencyStatus || 'year_round',
-      open_to_seasonal: openToSeasonal !== false,
-      intent,
-      min_age_pref: Number(minAgePref) || 28,
-      max_age_pref: Number(maxAgePref) || 44,
+      intent: primaryIntent,
+      intents: cleanIntents,
+      min_age_pref: Number(minAgePref) || 19,
+      max_age_pref: Number(maxAgePref) || 39,
       max_drive_miles: Number(maxDriveMiles) || 45,
-      wants_kids: wantsKids || 'open',
+      wants_kids: cleanKids,
+      partner_kids_pref: cleanPartnerKids,
       smoking: cleanSmoking,
       occupation: cleanOccupation,
       height_inches: heightInches ? Number(heightInches) : null,
@@ -180,7 +222,6 @@ export async function POST(req: NextRequest) {
       cap: COHORT_CAP_PER_GENDER,
     });
 
-    // Automatically log the new member in so /call opens straight into the Green Room
     attachSessionCookie(res, authData.user.id, cleanEmail);
     return res;
   } catch (err: any) {
