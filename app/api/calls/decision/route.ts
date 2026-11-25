@@ -26,7 +26,6 @@ export async function POST(request: Request) {
     const targetId = normalizeIdentity(targetDisplay);
     const supabase = getSupabaseService();
 
-    // Check if either side blocked the other
     const { data: blockRows } = await supabase
       .from("user_blocks")
       .select("id")
@@ -38,8 +37,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ matched: false, blocked: true });
     }
 
-    // Record voter's decision
-    const { error: upsertErr } = await supabase.from("call_decisions").upsert(
+    const { error: upsertErr } = await supabase.from("mvp_call_decisions").upsert(
       {
         room_name: roomName,
         voter_identity: voterId,
@@ -59,9 +57,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ matched: false, decision: "pass" });
     }
 
-    // Check if partner already liked us in this room
     const { data: partnerVote } = await supabase
-      .from("call_decisions")
+      .from("mvp_call_decisions")
       .select("decision, voter_display")
       .eq("room_name", roomName)
       .eq("voter_identity", targetId)
@@ -79,7 +76,7 @@ export async function POST(request: Request) {
       ].sort((a, b) => a.id.localeCompare(b.id));
 
       const { data: matchRow, error: matchErr } = await supabase
-        .from("matches")
+        .from("mvp_matches")
         .upsert(
           {
             room_name: roomName,
@@ -123,7 +120,7 @@ export async function GET(request: Request) {
     const [userA, userB] = [voterId, targetId].sort();
 
     const { data: matchRow } = await supabase
-      .from("matches")
+      .from("mvp_matches")
       .select("*")
       .eq("user_a", userA)
       .eq("user_b", userB)
@@ -136,7 +133,7 @@ export async function GET(request: Request) {
 
     if (roomName) {
       const { data: partnerVote } = await supabase
-        .from("call_decisions")
+        .from("mvp_call_decisions")
         .select("decision")
         .eq("room_name", roomName)
         .eq("voter_identity", targetId)

@@ -14,6 +14,7 @@ const SWFL_AREAS: Record<string, { lat: number; lng: number }> = {
   'Naples area': { lat: 26.1420, lng: -81.7948 },
 };
 
+const VALID_SMOKING = new Set(['non_smoker', 'smoker', 'cannabis_only']);
 const COHORT_CAP_PER_GENDER = 50;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -65,11 +66,27 @@ export async function POST(req: NextRequest) {
       occupation,
       heightInches,
       firstMeetSpot,
+      firstMeetPlace,
     } = body;
 
     if (!email || !password || !displayName || !birthYear || !gender || !areaLabel || !intent) {
       return NextResponse.json({ error: 'Please complete all required fields.' }, { status: 400 });
     }
+
+    const cleanOccupation = String(occupation || '').trim();
+    if (!cleanOccupation) {
+      return NextResponse.json({ error: 'Please enter your occupation.' }, { status: 400 });
+    }
+
+    const cleanSpot = String(firstMeetSpot || '').trim();
+    if (!cleanSpot) {
+      return NextResponse.json(
+        { error: 'Please enter or locate your favorite local spot for a first meet.' },
+        { status: 400 }
+      );
+    }
+
+    const cleanSmoking = VALID_SMOKING.has(String(smoking)) ? String(smoking) : 'non_smoker';
 
     const cleanEmail = String(email).trim().toLowerCase();
     if (!EMAIL_REGEX.test(cleanEmail)) {
@@ -88,7 +105,6 @@ export async function POST(req: NextRequest) {
 
     const coords = SWFL_AREAS[areaLabel] || SWFL_AREAS['Punta Gorda area'];
 
-    // 1. Check active cohort count for this gender to enforce the 50/50 cap
     const { count: activeCount, error: countError } = await supabaseAdmin
       .from('profiles')
       .select('id', { count: 'exact' })
@@ -105,7 +121,6 @@ export async function POST(req: NextRequest) {
     const currentActive = activeCount || 0;
     const cohortStatus = currentActive < COHORT_CAP_PER_GENDER ? 'active' : 'waitlisted';
 
-    // 2. Create Supabase Auth user
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password,
@@ -119,10 +134,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Insert profile row with Private Vault (locked until Stage 2 mutual reveal)
-    const bioPrompts = firstMeetSpot?.trim()
-      ? [{ question: 'Favorite first-meet spot', answer: firstMeetSpot.trim() }]
-      : [];
+    const bioPrompts = [
+      {
+        question: 'Favorite first-meet spot',
+        answer: cleanSpot,
+        place: firstMeetPlace || null,
+      },
+    ];
 
     const { error: profileError } = await supabaseAdmin.from('profiles').insert({
       id: authData.user.id,
@@ -140,8 +158,8 @@ export async function POST(req: NextRequest) {
       max_age_pref: Number(maxAgePref) || 44,
       max_drive_miles: Number(maxDriveMiles) || 45,
       wants_kids: wantsKids || 'open',
-      smoking: smoking || 'never',
-      occupation: occupation?.trim() || null,
+      smoking: cleanSmoking,
+      occupation: cleanOccupation,
       height_inches: heightInches ? Number(heightInches) : null,
       bio_prompts: bioPrompts,
     });

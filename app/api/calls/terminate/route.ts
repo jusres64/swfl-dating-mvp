@@ -25,7 +25,6 @@ export async function POST(request: Request) {
 
     const supabase = getSupabaseService();
 
-    // 1. Log safety report
     const { error: reportErr } = await supabase.from("safety_reports").insert({
       room_name: roomName || null,
       reporter_identity: reporterId,
@@ -36,7 +35,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: reportErr.message }, { status: 500 });
     }
 
-    // 2. Permanently block pair from future matches
     await supabase.from("user_blocks").upsert(
       {
         blocker_identity: reporterId,
@@ -46,19 +44,17 @@ export async function POST(request: Request) {
       { onConflict: "blocker_identity,blocked_identity" }
     );
 
-    // 3. Disable any existing match between these two users
     const [userA, userB] = [reporterId, reportedId].sort();
     await supabase
-      .from("matches")
+      .from("mvp_matches")
       .update({ status: "blocked" })
       .eq("user_a", userA)
       .eq("user_b", userB);
 
     if (body.matchId) {
-      await supabase.from("matches").update({ status: "blocked" }).eq("id", body.matchId);
+      await supabase.from("mvp_matches").update({ status: "blocked" }).eq("id", body.matchId);
     }
 
-    // 4. Auto-suspend if 2 or more unique reporters have flagged this user
     const { data: priorReports } = await supabase
       .from("safety_reports")
       .select("reporter_identity")

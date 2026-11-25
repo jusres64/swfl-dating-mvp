@@ -8,10 +8,9 @@ export async function GET(request: Request) {
     const identity = normalizeIdentity(searchParams.get("identity") || "");
     const supabase = getSupabaseService();
 
-    // Fetch messages for one match
     if (matchId) {
       const { data: match, error: matchErr } = await supabase
-        .from("matches")
+        .from("mvp_matches")
         .select("*")
         .eq("id", matchId)
         .maybeSingle();
@@ -25,7 +24,7 @@ export async function GET(request: Request) {
       }
 
       const { data: messages, error: msgErr } = await supabase
-        .from("messages")
+        .from("mvp_messages")
         .select("*")
         .eq("match_id", matchId)
         .order("created_at", { ascending: true });
@@ -37,13 +36,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ match, messages: messages || [], blocked: false });
     }
 
-    // List all active matches for a user
     if (!identity) {
       return NextResponse.json({ matches: [] });
     }
 
     const { data: matches, error } = await supabase
-      .from("matches")
+      .from("mvp_matches")
       .select("*")
       .eq("status", "active")
       .or(`user_a.eq.${identity},user_b.eq.${identity}`)
@@ -83,7 +81,7 @@ export async function POST(request: Request) {
     const supabase = getSupabaseService();
 
     const { data: match } = await supabase
-      .from("matches")
+      .from("mvp_matches")
       .select("id, status, user_a, user_b")
       .eq("id", matchId)
       .maybeSingle();
@@ -100,7 +98,7 @@ export async function POST(request: Request) {
     }
 
     const { data: inserted, error } = await supabase
-      .from("messages")
+      .from("mvp_messages")
       .insert({
         match_id: matchId,
         sender_identity: senderId,

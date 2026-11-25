@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 const SWFL_AREA_OPTIONS = [
@@ -17,6 +17,16 @@ const SWFL_AREA_OPTIONS = [
 ];
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+type SwflPlace = {
+  id: string;
+  name: string;
+  city: string;
+  subtitle: string;
+  label: string;
+  lat: number;
+  lng: number;
+};
 
 export default function JoinPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -41,17 +51,55 @@ export default function JoinPage() {
   // Step 2: Essential Compatibility
   const [intent, setIntent] = useState<'long_term' | 'open_to_long' | 'casual'>('long_term');
   const [wantsKids, setWantsKids] = useState<'yes' | 'no' | 'open' | 'have_and_done'>('open');
-  const [smoking, setSmoking] = useState<'never' | 'occasionally' | 'regularly'>('never');
+  const [smoking, setSmoking] = useState<'non_smoker' | 'smoker' | 'cannabis_only'>('non_smoker');
   const [minAgePref, setMinAgePref] = useState('30');
   const [maxAgePref, setMaxAgePref] = useState('44');
   const [maxDriveMiles, setMaxDriveMiles] = useState('45');
   const [openToSeasonal, setOpenToSeasonal] = useState(true);
 
-  // Step 3: Private Profile Vault
+  // Step 3: Private Profile Vault (Required Occupation + Required SWFL Spot Locator)
   const [occupation, setOccupation] = useState('');
   const [heightFeet, setHeightFeet] = useState('5');
   const [heightInchesPart, setHeightInchesPart] = useState('7');
   const [firstMeetSpot, setFirstMeetSpot] = useState('');
+  const [selectedPlace, setSelectedPlace] = useState<SwflPlace | null>(null);
+  const [placeResults, setPlaceResults] = useState<SwflPlace[]>([]);
+  const [searchingPlaces, setSearchingPlaces] = useState(false);
+  const [showPlaceDropdown, setShowPlaceDropdown] = useState(false);
+
+  // Debounced live SWFL place lookup
+  useEffect(() => {
+    if (step !== 3) return;
+    const query = firstMeetSpot.trim();
+    if (query.length < 2 || (selectedPlace && selectedPlace.label === query)) {
+      setPlaceResults([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setSearchingPlaces(true);
+      try {
+        const qs = new URLSearchParams({ q: query, area: areaLabel });
+        const res = await fetch(`/api/places/search?${qs.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { places?: SwflPlace[] };
+        setPlaceResults(data.places || []);
+        setShowPlaceDropdown(true);
+      } catch {
+        // Ignore aborted requests
+      } finally {
+        setSearchingPlaces(false);
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [firstMeetSpot, areaLabel, step, selectedPlace]);
 
   const handleNextStep1 = () => {
     setErrorMsg(null);
@@ -76,8 +124,17 @@ export default function JoinPage() {
   };
 
   const handleSubmit = async () => {
-    setLoading(true);
     setErrorMsg(null);
+    if (!occupation.trim()) {
+      setErrorMsg('Please enter your occupation.');
+      return;
+    }
+    if (firstMeetSpot.trim().length < 3) {
+      setErrorMsg('Please enter or pick your favorite local SWFL spot for a first meet.');
+      return;
+    }
+
+    setLoading(true);
     try {
       const totalHeightInches = Number(heightFeet) * 12 + Number(heightInchesPart);
       const res = await fetch('/api/join', {
@@ -98,9 +155,10 @@ export default function JoinPage() {
           maxDriveMiles: Number(maxDriveMiles),
           wantsKids,
           smoking,
-          occupation,
+          occupation: occupation.trim(),
           heightInches: totalHeightInches,
-          firstMeetSpot,
+          firstMeetSpot: firstMeetSpot.trim(),
+          firstMeetPlace: selectedPlace,
         }),
       });
 
@@ -126,7 +184,7 @@ export default function JoinPage() {
         </div>
 
         <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#F5F0EB]/12 bg-[#231F1C]/95 backdrop-blur-xl p-8 space-y-6 text-center shadow-2xl">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-[#7A9E7E]/40 bg-[#7A9E7E]/15 text-[#9AC19E]">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-[#E5C185]/40 bg-[#E5C185]/15 text-[#E5C185]">
             <svg
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 24 24"
@@ -150,7 +208,7 @@ export default function JoinPage() {
             </h1>
             <p className="text-xs text-[#C2B9B0] leading-relaxed">
               {isActive
-                ? 'Your spot in the 50/50 Southwest Florida Founding Beta is reserved. Your Private Vault stays completely hidden until Stage 2 of a live call when you both choose to reveal it.'
+                ? 'Your spot in the 50/50 Southwest Florida Founding Beta is reserved. Your Private Vault stays hidden until you both choose to match after a live call.'
                 : 'Our first 50 spots for your group are currently full so we can keep Sunday Live Drops balanced. You will be notified first as soon as a spot opens.'}
             </p>
           </div>
@@ -197,7 +255,6 @@ export default function JoinPage() {
           <span className="text-[11px] font-medium text-[#E5C185]">Step {step} of 3</span>
         </div>
 
-        {/* Progress Bar */}
         <div className="h-1 w-full rounded-full bg-[#231F1C] overflow-hidden">
           <div
             className="h-full bg-[#E5C185] transition-all duration-300"
@@ -391,12 +448,14 @@ export default function JoinPage() {
                     </label>
                     <select
                       value={smoking}
-                      onChange={(e) => setSmoking(e.target.value as any)}
+                      onChange={(e) =>
+                        setSmoking(e.target.value as 'non_smoker' | 'smoker' | 'cannabis_only')
+                      }
                       className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
                     >
-                      <option value="never">Non-smoker</option>
-                      <option value="occasionally">Occasionally</option>
-                      <option value="regularly">Regularly</option>
+                      <option value="non_smoker">Non-smoker</option>
+                      <option value="smoker">Smoker</option>
+                      <option value="cannabis_only">Cannabis only</option>
                     </select>
                   </div>
                 </div>
@@ -470,21 +529,22 @@ export default function JoinPage() {
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#E5C185]">
-                  Locked Until Stage 2 Mutual Reveal
+                  Locked Until Mutual Match
                 </p>
                 <h1 className="font-serif text-2xl text-[#F5F0EB]">Your Private Vault</h1>
                 <p className="text-xs text-[#C2B9B0] leading-relaxed">
-                  Nobody can browse these details. Everything below stays completely hidden until a live call reaches Stage 2 and both of you choose to unlock it.
+                  Nobody can browse these details. Everything below stays hidden until you both choose to match after a live call.
                 </p>
               </div>
 
               <div className="space-y-3">
                 <div>
                   <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                    Occupation (Optional)
+                    Occupation <span className="text-[#D96B52]">*</span>
                   </label>
                   <input
                     type="text"
+                    required
                     value={occupation}
                     onChange={(e) => setOccupation(e.target.value)}
                     placeholder="e.g. Architect, Nurse, Small Business Owner"
@@ -525,19 +585,82 @@ export default function JoinPage() {
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0]">
-                      Favorite Local Spot for a First Meet (Optional)
-                    </label>
+                <div className="space-y-1.5 relative">
+                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0]">
+                    Favorite Local Spot for a First Meet <span className="text-[#D96B52]">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      required
+                      value={firstMeetSpot}
+                      onChange={(e) => {
+                        setFirstMeetSpot(e.target.value);
+                        setSelectedPlace(null);
+                      }}
+                      onFocus={() => {
+                        if (placeResults.length > 0) setShowPlaceDropdown(true);
+                      }}
+                      placeholder="Search a SWFL coffee shop, park, or patio..."
+                      className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 pr-9 text-sm text-[#F5F0EB] placeholder-[#C2B9B0]/45 focus:outline-none focus:border-[#E5C185]"
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#E5C185]">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="h-4 w-4"
+                      >
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                        <circle cx="12" cy="10" r="3" />
+                      </svg>
+                    </span>
                   </div>
-                  <input
-                    type="text"
-                    value={firstMeetSpot}
-                    onChange={(e) => setFirstMeetSpot(e.target.value)}
-                    placeholder="e.g. Waterfront coffee in Punta Gorda or a patio in Sarasota"
-                    className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 text-sm text-[#F5F0EB] placeholder-[#C2B9B0]/45 focus:outline-none focus:border-[#E5C185]"
-                  />
+
+                  {searchingPlaces && (
+                    <p className="text-[11px] text-[#E5C185]">Locating spots in Southwest Florida...</p>
+                  )}
+
+                  {selectedPlace && (
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-[#E5C185]/35 bg-[#1C1814] px-3 py-2 text-[11px] text-[#E5C185]">
+                      <span className="truncate">
+                        Located in SWFL: {selectedPlace.subtitle}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPlace(null);
+                          setFirstMeetSpot('');
+                        }}
+                        className="shrink-0 text-[#C2B9B0] hover:text-[#F5F0EB] underline"
+                      >
+                        Change
+                      </button>
+                    </div>
+                  )}
+
+                  {showPlaceDropdown && placeResults.length > 0 && !selectedPlace && (
+                    <div className="z-30 max-h-48 overflow-y-auto rounded-xl border border-[#E5C185]/30 bg-[#161412] shadow-2xl divide-y divide-[#F5F0EB]/10">
+                      {placeResults.map((place) => (
+                        <button
+                          key={place.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPlace(place);
+                            setFirstMeetSpot(place.label);
+                            setShowPlaceDropdown(false);
+                          }}
+                          className="w-full px-3.5 py-2.5 text-left hover:bg-[#231F1C] transition"
+                        >
+                          <p className="text-xs font-medium text-[#F5F0EB]">{place.name}</p>
+                          <p className="text-[11px] text-[#C2B9B0] truncate">{place.subtitle}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="flex items-start gap-2 rounded-xl border border-[#E5C185]/20 bg-[#161412]/70 px-3 py-2 text-[11px] text-[#C2B9B0] leading-relaxed">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -551,7 +674,7 @@ export default function JoinPage() {
                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                     </svg>
                     <span>
-                      Stays hidden until you both reach Stage 2 (Mutual Profile Reveal), making it easy to suggest a real-life meet if you hit it off.
+                      Stays hidden until you both match after a call, making it easy to suggest a real-life meet if you hit it off.
                     </span>
                   </div>
                 </div>
