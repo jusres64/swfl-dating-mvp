@@ -1641,37 +1641,34 @@ export default function CallPage() {
         {/* ORIGINAL 3-SECOND SPARK CARD */}
         <div className="absolute bottom-2.5 inset-x-3 z-20 flex justify-center">
           {sparkVisible ? (
-            <div className="w-full max-w-lg rounded-2xl border border-[#F0E2CC]/20 bg-[#141013]/88 backdrop-blur-md px-3.5 py-2.5 shadow-xl">
+            <div className="w-full max-w-lg rounded-2xl border border-[#F0E2CC]/20 bg-[#141013]/92 backdrop-blur-md px-4 py-3 shadow-xl">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#A89A90] leading-tight shrink-0">
-                  3-Second
-                  <br />
-                  Spark
+                <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#E5C17B]">
+                  3-Second Spark
                 </span>
-
-                <span className="font-serif text-xl sm:text-2xl font-medium text-[#F8F1E7] tracking-tight truncate px-1">
-                  {SPARK_WORDS[sparkIndex]}
-                </span>
-
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={handleNewWord}
-                    className="min-h-[44px] px-3.5 rounded-full border border-[#F0E2CC]/25 bg-[#1F191C] hover:bg-[#2B2327] text-xs font-medium text-[#F5EDE2] transition"
+                    className="min-h-[40px] px-3.5 rounded-full border border-[#F0E2CC]/25 bg-[#1F191C] hover:bg-[#2B2327] text-xs font-medium text-[#F5EDE2] transition"
                   >
                     New Word
                   </button>
                   <button
                     type="button"
                     onClick={() => setSparkVisible(false)}
-                    className="min-h-[44px] px-3 rounded-xl text-xs font-medium text-[#A89A90] hover:text-[#F5EDE2] hover:bg-[#1F191C] transition"
+                    className="min-h-[40px] px-3 rounded-xl text-xs font-medium text-[#A89A90] hover:text-[#F5EDE2] hover:bg-[#1F191C] transition"
                   >
                     Hide
                   </button>
                 </div>
               </div>
 
-              <p className="mt-1.5 text-[11px] text-[#B8AAA0] leading-snug">
+              <div className="mt-1 font-serif text-2xl sm:text-3xl font-medium text-[#F8F1E7] tracking-tight break-words">
+                {SPARK_WORDS[sparkIndex]}
+              </div>
+
+              <p className="mt-1 text-[11px] text-[#B8AAA0] leading-snug">
                 Just a random thing. Say whatever pops into your head in the first 3 seconds.
               </p>
             </div>

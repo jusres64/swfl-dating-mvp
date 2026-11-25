@@ -28,6 +28,19 @@ type SwflPlace = {
   lng: number;
 };
 
+function computeAgePrefs(birthYearStr: string): { min: string; max: string } {
+  const year = Number(birthYearStr);
+  const currentYear = new Date().getFullYear();
+  if (isNaN(year) || year < 1940 || year > currentYear - 18) {
+    return { min: '19', max: '39' };
+  }
+  const age = currentYear - year;
+  return {
+    min: String(Math.max(18, age - 10)),
+    max: String(Math.min(99, age + 10)),
+  };
+}
+
 export default function JoinPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
@@ -39,25 +52,25 @@ export default function JoinPage() {
     cap: number;
   } | null>(null);
 
-  // Step 1: Basics & SWFL Area
+  // Step 1: Basics & SWFL Area (Default 1997 = 29 yrs old)
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [birthYear, setBirthYear] = useState('1988');
+  const [birthYear, setBirthYear] = useState('1997');
   const [gender, setGender] = useState<'man' | 'woman'>('woman');
-  const [areaLabel, setAreaLabel] = useState('Sarasota area');
+  const [areaLabel, setAreaLabel] = useState('Punta Gorda area');
   const [residencyStatus, setResidencyStatus] = useState<'year_round' | 'seasonal' | 'visiting'>('year_round');
 
-  // Step 2: Essential Compatibility
+  // Step 2: Essential Compatibility (Auto +/- 10 years from birth year)
+  const initialPrefs = computeAgePrefs('1997');
   const [intent, setIntent] = useState<'long_term' | 'open_to_long' | 'casual'>('long_term');
   const [wantsKids, setWantsKids] = useState<'yes' | 'no' | 'open' | 'have_and_done'>('open');
   const [smoking, setSmoking] = useState<'non_smoker' | 'smoker' | 'cannabis_only'>('non_smoker');
-  const [minAgePref, setMinAgePref] = useState('30');
-  const [maxAgePref, setMaxAgePref] = useState('44');
+  const [minAgePref, setMinAgePref] = useState(initialPrefs.min);
+  const [maxAgePref, setMaxAgePref] = useState(initialPrefs.max);
   const [maxDriveMiles, setMaxDriveMiles] = useState('45');
-  const [openToSeasonal, setOpenToSeasonal] = useState(true);
 
-  // Step 3: Private Profile Vault (Required Occupation + Required SWFL Spot Locator)
+  // Step 3: Private Profile Vault
   const [occupation, setOccupation] = useState('');
   const [heightFeet, setHeightFeet] = useState('5');
   const [heightInchesPart, setHeightInchesPart] = useState('7');
@@ -67,7 +80,18 @@ export default function JoinPage() {
   const [searchingPlaces, setSearchingPlaces] = useState(false);
   const [showPlaceDropdown, setShowPlaceDropdown] = useState(false);
 
-  // Debounced live SWFL place lookup
+  const handleBirthYearChange = (val: string) => {
+    setBirthYear(val);
+    const yearNum = Number(val);
+    const currentYear = new Date().getFullYear();
+    if (val.length === 4 && !isNaN(yearNum) && yearNum >= 1940 && yearNum <= currentYear - 18) {
+      const next = computeAgePrefs(val);
+      setMinAgePref(next.min);
+      setMaxAgePref(next.max);
+    }
+  };
+
+  // Debounced live SWFL place lookup (searches all of Southwest Florida)
   useEffect(() => {
     if (step !== 3) return;
     const query = firstMeetSpot.trim();
@@ -80,7 +104,7 @@ export default function JoinPage() {
     const timer = setTimeout(async () => {
       setSearchingPlaces(true);
       try {
-        const qs = new URLSearchParams({ q: query, area: areaLabel });
+        const qs = new URLSearchParams({ q: query });
         const res = await fetch(`/api/places/search?${qs.toString()}`, {
           signal: controller.signal,
         });
@@ -99,7 +123,7 @@ export default function JoinPage() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [firstMeetSpot, areaLabel, step, selectedPlace]);
+  }, [firstMeetSpot, step, selectedPlace]);
 
   const handleNextStep1 = () => {
     setErrorMsg(null);
@@ -116,8 +140,9 @@ export default function JoinPage() {
       return;
     }
     const yearNum = Number(birthYear);
-    if (isNaN(yearNum) || yearNum < 1940 || yearNum > 2005) {
-      setErrorMsg('Please enter a valid 4-digit birth year.');
+    const currentYear = new Date().getFullYear();
+    if (isNaN(yearNum) || yearNum < 1940 || yearNum > currentYear - 18) {
+      setErrorMsg('Please enter a valid 4-digit birth year (must be 18 or older).');
       return;
     }
     setStep(2);
@@ -148,7 +173,7 @@ export default function JoinPage() {
           gender,
           areaLabel,
           residencyStatus,
-          openToSeasonal,
+          openToSeasonal: true,
           intent,
           minAgePref: Number(minAgePref),
           maxAgePref: Number(maxAgePref),
@@ -317,8 +342,8 @@ export default function JoinPage() {
                     <input
                       type="number"
                       value={birthYear}
-                      onChange={(e) => setBirthYear(e.target.value)}
-                      placeholder="1988"
+                      onChange={(e) => handleBirthYearChange(e.target.value)}
+                      placeholder="1997"
                       className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
                     />
                   </div>
@@ -495,16 +520,6 @@ export default function JoinPage() {
                     />
                   </div>
                 </div>
-
-                <label className="flex items-center gap-2.5 rounded-xl border border-[#F5F0EB]/10 bg-[#161412]/70 px-3.5 py-3 text-xs text-[#E3DBD3] cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={openToSeasonal}
-                    onChange={(e) => setOpenToSeasonal(e.target.checked)}
-                    className="h-4 w-4 accent-[#E5C185]"
-                  />
-                  <span>Open to dating someone who is only local part of the year</span>
-                </label>
               </div>
 
               <div className="flex gap-2.5">
@@ -601,7 +616,7 @@ export default function JoinPage() {
                       onFocus={() => {
                         if (placeResults.length > 0) setShowPlaceDropdown(true);
                       }}
-                      placeholder="Search a SWFL coffee shop, park, or patio..."
+                      placeholder="Search any SWFL coffee shop, park, or patio..."
                       className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 pr-9 text-sm text-[#F5F0EB] placeholder-[#C2B9B0]/45 focus:outline-none focus:border-[#E5C185]"
                     />
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#E5C185]">
@@ -620,13 +635,13 @@ export default function JoinPage() {
                   </div>
 
                   {searchingPlaces && (
-                    <p className="text-[11px] text-[#E5C185]">Locating spots in Southwest Florida...</p>
+                    <p className="text-[11px] text-[#E5C185]">Searching across Southwest Florida...</p>
                   )}
 
                   {selectedPlace && (
                     <div className="flex items-center justify-between gap-2 rounded-xl border border-[#E5C185]/35 bg-[#1C1814] px-3 py-2 text-[11px] text-[#E5C185]">
                       <span className="truncate">
-                        Located in SWFL: {selectedPlace.subtitle}
+                        Located: {selectedPlace.subtitle}
                       </span>
                       <button
                         type="button"
