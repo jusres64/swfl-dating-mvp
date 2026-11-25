@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 
 const SWFL_AREA_OPTIONS = [
@@ -17,16 +17,6 @@ const SWFL_AREA_OPTIONS = [
 ];
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-type SwflPlace = {
-  id: string;
-  name: string;
-  city: string;
-  subtitle: string;
-  label: string;
-  lat: number;
-  lng: number;
-};
 
 function computeAgePrefs(birthYearStr: string): { min: string; max: string } {
   const year = Number(birthYearStr);
@@ -59,7 +49,6 @@ export default function JoinPage() {
   const [birthYear, setBirthYear] = useState('1997');
   const [gender, setGender] = useState<'man' | 'woman'>('woman');
   const [areaLabel, setAreaLabel] = useState('Punta Gorda area');
-  const [residencyStatus, setResidencyStatus] = useState<'year_round' | 'seasonal' | 'visiting'>('year_round');
 
   // Step 2: Essential Compatibility (Auto +/- 10 years from birth year)
   const initialPrefs = computeAgePrefs('1997');
@@ -75,10 +64,6 @@ export default function JoinPage() {
   const [heightFeet, setHeightFeet] = useState('5');
   const [heightInchesPart, setHeightInchesPart] = useState('7');
   const [firstMeetSpot, setFirstMeetSpot] = useState('');
-  const [selectedPlace, setSelectedPlace] = useState<SwflPlace | null>(null);
-  const [placeResults, setPlaceResults] = useState<SwflPlace[]>([]);
-  const [searchingPlaces, setSearchingPlaces] = useState(false);
-  const [showPlaceDropdown, setShowPlaceDropdown] = useState(false);
 
   const handleBirthYearChange = (val: string) => {
     setBirthYear(val);
@@ -90,40 +75,6 @@ export default function JoinPage() {
       setMaxAgePref(next.max);
     }
   };
-
-  // Debounced live SWFL place lookup (searches all of Southwest Florida)
-  useEffect(() => {
-    if (step !== 3) return;
-    const query = firstMeetSpot.trim();
-    if (query.length < 2 || (selectedPlace && selectedPlace.label === query)) {
-      setPlaceResults([]);
-      return;
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(async () => {
-      setSearchingPlaces(true);
-      try {
-        const qs = new URLSearchParams({ q: query });
-        const res = await fetch(`/api/places/search?${qs.toString()}`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as { places?: SwflPlace[] };
-        setPlaceResults(data.places || []);
-        setShowPlaceDropdown(true);
-      } catch {
-        // Ignore aborted requests
-      } finally {
-        setSearchingPlaces(false);
-      }
-    }, 350);
-
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [firstMeetSpot, step, selectedPlace]);
 
   const handleNextStep1 = () => {
     setErrorMsg(null);
@@ -155,7 +106,7 @@ export default function JoinPage() {
       return;
     }
     if (firstMeetSpot.trim().length < 3) {
-      setErrorMsg('Please enter or pick your favorite local SWFL spot for a first meet.');
+      setErrorMsg('Please enter your favorite local SWFL spot for a first meet.');
       return;
     }
 
@@ -172,7 +123,7 @@ export default function JoinPage() {
           birthYear: Number(birthYear),
           gender,
           areaLabel,
-          residencyStatus,
+          residencyStatus: 'year_round',
           openToSeasonal: true,
           intent,
           minAgePref: Number(minAgePref),
@@ -183,7 +134,7 @@ export default function JoinPage() {
           occupation: occupation.trim(),
           heightInches: totalHeightInches,
           firstMeetSpot: firstMeetSpot.trim(),
-          firstMeetPlace: selectedPlace,
+          firstMeetPlace: null,
         }),
       });
 
@@ -303,7 +254,7 @@ export default function JoinPage() {
                 </p>
                 <h1 className="font-serif text-2xl text-[#F5F0EB]">The basics</h1>
                 <p className="text-xs text-[#C2B9B0] leading-relaxed">
-                  Cohort 1 is capped at 50 men and 50 women in Southwest Florida (men seeking women and women seeking men) so nobody sits in an empty live queue.
+                  Cohort 1 is exclusively for Southwest Florida locals, capped at 50 men and 50 women so nobody sits in an empty live queue.
                 </p>
               </div>
 
@@ -363,23 +314,6 @@ export default function JoinPage() {
                         {area}
                       </option>
                     ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0] mb-1">
-                    Time in Southwest Florida
-                  </label>
-                  <select
-                    value={residencyStatus}
-                    onChange={(e) =>
-                      setResidencyStatus(e.target.value as 'year_round' | 'seasonal' | 'visiting')
-                    }
-                    className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3 py-2.5 text-sm text-[#F5F0EB] focus:outline-none focus:border-[#E5C185]"
-                  >
-                    <option value="year_round">Live here year-round</option>
-                    <option value="seasonal">Seasonal / part of the year</option>
-                    <option value="visiting">Visiting</option>
                   </select>
                 </div>
 
@@ -600,81 +534,18 @@ export default function JoinPage() {
                   </div>
                 </div>
 
-                <div className="space-y-1.5 relative">
+                <div className="space-y-1.5">
                   <label className="block text-[11px] font-medium uppercase tracking-wider text-[#C2B9B0]">
                     Favorite Local Spot for a First Meet <span className="text-[#D96B52]">*</span>
                   </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      required
-                      value={firstMeetSpot}
-                      onChange={(e) => {
-                        setFirstMeetSpot(e.target.value);
-                        setSelectedPlace(null);
-                      }}
-                      onFocus={() => {
-                        if (placeResults.length > 0) setShowPlaceDropdown(true);
-                      }}
-                      placeholder="Search any SWFL coffee shop, park, or patio..."
-                      className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 pr-9 text-sm text-[#F5F0EB] placeholder-[#C2B9B0]/45 focus:outline-none focus:border-[#E5C185]"
-                    />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#E5C185]">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        className="h-4 w-4"
-                      >
-                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                        <circle cx="12" cy="10" r="3" />
-                      </svg>
-                    </span>
-                  </div>
-
-                  {searchingPlaces && (
-                    <p className="text-[11px] text-[#E5C185]">Searching across Southwest Florida...</p>
-                  )}
-
-                  {selectedPlace && (
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-[#E5C185]/35 bg-[#1C1814] px-3 py-2 text-[11px] text-[#E5C185]">
-                      <span className="truncate">
-                        Located: {selectedPlace.subtitle}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedPlace(null);
-                          setFirstMeetSpot('');
-                        }}
-                        className="shrink-0 text-[#C2B9B0] hover:text-[#F5F0EB] underline"
-                      >
-                        Change
-                      </button>
-                    </div>
-                  )}
-
-                  {showPlaceDropdown && placeResults.length > 0 && !selectedPlace && (
-                    <div className="z-30 max-h-48 overflow-y-auto rounded-xl border border-[#E5C185]/30 bg-[#161412] shadow-2xl divide-y divide-[#F5F0EB]/10">
-                      {placeResults.map((place) => (
-                        <button
-                          key={place.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedPlace(place);
-                            setFirstMeetSpot(place.label);
-                            setShowPlaceDropdown(false);
-                          }}
-                          className="w-full px-3.5 py-2.5 text-left hover:bg-[#231F1C] transition"
-                        >
-                          <p className="text-xs font-medium text-[#F5F0EB]">{place.name}</p>
-                          <p className="text-[11px] text-[#C2B9B0] truncate">{place.subtitle}</p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <input
+                    type="text"
+                    required
+                    value={firstMeetSpot}
+                    onChange={(e) => setFirstMeetSpot(e.target.value)}
+                    placeholder="e.g. Downtown Kava, Fishermen's Village, or Bayfront Park"
+                    className="w-full rounded-xl border border-[#F5F0EB]/15 bg-[#161412] px-3.5 py-2.5 text-sm text-[#F5F0EB] placeholder-[#C2B9B0]/45 focus:outline-none focus:border-[#E5C185]"
+                  />
 
                   <div className="flex items-start gap-2 rounded-xl border border-[#E5C185]/20 bg-[#161412]/70 px-3 py-2 text-[11px] text-[#C2B9B0] leading-relaxed">
                     <svg
