@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { attachSessionCookie } from '@/lib/authSession';
 
 const SWFL_AREAS: Record<string, { lat: number; lng: number }> = {
   'Punta Gorda area': { lat: 26.9298, lng: -82.0454 },
@@ -81,13 +82,12 @@ export async function POST(req: NextRequest) {
     const cleanSpot = String(firstMeetSpot || '').trim();
     if (!cleanSpot) {
       return NextResponse.json(
-        { error: 'Please enter or locate your favorite local spot for a first meet.' },
+        { error: 'Please enter your favorite local spot for a first meet.' },
         { status: 400 }
       );
     }
 
     const cleanSmoking = VALID_SMOKING.has(String(smoking)) ? String(smoking) : 'non_smoker';
-
     const cleanEmail = String(email).trim().toLowerCase();
     if (!EMAIL_REGEX.test(cleanEmail)) {
       return NextResponse.json(
@@ -172,13 +172,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({
+    const res = NextResponse.json({
       userId: authData.user.id,
       displayName: displayName.trim(),
       cohortStatus,
       spotNumber: cohortStatus === 'active' ? currentActive + 1 : null,
       cap: COHORT_CAP_PER_GENDER,
     });
+
+    // Automatically log the new member in so /call opens straight into the Green Room
+    attachSessionCookie(res, authData.user.id, cleanEmail);
+    return res;
   } catch (err: any) {
     return NextResponse.json(
       { error: formatError('Unexpected server error', err) },

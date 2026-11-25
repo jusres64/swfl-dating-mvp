@@ -1,29 +1,33 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedSession } from "@/lib/authSession";
 import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
 
 export async function POST(request: Request) {
   try {
+    const session = await getAuthenticatedSession();
     const body = (await request.json()) as {
       roomName?: string;
+      voterId?: string;
       voterName?: string;
+      targetId?: string;
       targetName?: string;
       decision?: "like" | "pass";
     };
 
     const roomName = (body.roomName || "coastal-dusk-test").trim();
-    const voterDisplay = (body.voterName || "").trim();
+    const voterId = normalizeIdentity(session?.userId || body.voterId || body.voterName || "");
+    const voterDisplay = (session?.profile.display_name || body.voterName || "").trim();
+    const targetId = normalizeIdentity(body.targetId || body.targetName || "");
     const targetDisplay = (body.targetName || "").trim();
     const decision = body.decision;
 
-    if (!voterDisplay || !targetDisplay || (decision !== "like" && decision !== "pass")) {
+    if (!voterId || !voterDisplay || !targetId || !targetDisplay || (decision !== "like" && decision !== "pass")) {
       return NextResponse.json(
-        { error: "roomName, voterName, targetName, and valid decision are required." },
+        { error: "Missing required decision fields." },
         { status: 400 }
       );
     }
 
-    const voterId = normalizeIdentity(voterDisplay);
-    const targetId = normalizeIdentity(targetDisplay);
     const supabase = getSupabaseService();
 
     const { data: blockRows } = await supabase
@@ -107,10 +111,15 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
+    const session = await getAuthenticatedSession();
     const { searchParams } = new URL(request.url);
     const roomName = (searchParams.get("roomName") || "").trim();
-    const voterId = normalizeIdentity(searchParams.get("voterName") || "");
-    const targetId = normalizeIdentity(searchParams.get("targetName") || "");
+    const voterId = normalizeIdentity(
+      session?.userId || searchParams.get("voterId") || searchParams.get("voterName") || ""
+    );
+    const targetId = normalizeIdentity(
+      searchParams.get("targetId") || searchParams.get("targetName") || ""
+    );
 
     if (!voterId || !targetId) {
       return NextResponse.json({ matched: false }, { status: 400 });

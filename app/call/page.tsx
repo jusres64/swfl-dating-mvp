@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ConnectionQuality,
   ConnectionState,
@@ -20,7 +21,7 @@ type WakeLockSentinelLike = {
   release: () => Promise<void>;
 };
 
-type ViewMode = "lobby" | "call" | "post-call" | "chat";
+type ViewMode = "greenroom" | "call" | "post-call" | "chat";
 type PipCorner = "top-right" | "top-left" | "bottom-right" | "bottom-left";
 
 type SignalMessage =
@@ -28,6 +29,21 @@ type SignalMessage =
   | { type: "video_cancel" }
   | { type: "video_decline" }
   | { type: "spark_index"; index: number };
+
+type UserProfile = {
+  id: string;
+  gender: "man" | "woman";
+  cohort_status: string;
+  display_name: string;
+  birth_year: number;
+  area_label: string;
+  intent: string;
+  min_age_pref: number;
+  max_age_pref: number;
+  max_drive_miles: number;
+  smoking: string | null;
+  occupation: string | null;
+};
 
 type MatchRecord = {
   id: string;
@@ -38,6 +54,17 @@ type MatchRecord = {
   user_b_display: string;
   status: string;
   created_at: string;
+};
+
+type PartnerVaultProfile = {
+  displayName: string;
+  age: number | null;
+  areaLabel: string;
+  occupation: string;
+  height: string;
+  smoking: string;
+  intent: string;
+  firstMeetSpot: string;
 };
 
 type ChatMessage = {
@@ -100,15 +127,28 @@ function formatDuration(totalSeconds: number): string {
 }
 
 export default function CallPage() {
-  // Navigation & identity
-  const [viewMode, setViewMode] = useState<ViewMode>("lobby");
-  const [displayName, setDisplayName] = useState("");
-  const [roomName, setRoomName] = useState("coastal-dusk-test");
+  // Auth state
+  const [authChecking, setAuthChecking] = useState(true);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  // Navigation & queue state
+  const [viewMode, setViewMode] = useState<ViewMode>("greenroom");
+  const [inQueue, setInQueue] = useState(false);
+  const [queueWaitSeconds, setQueueWaitSeconds] = useState(0);
+  const [waitingCount, setWaitingCount] = useState(1);
+  const [allowRematch, setAllowRematch] = useState(true);
+  const [showManualRoom, setShowManualRoom] = useState(false);
+  const [manualRoomCode, setManualRoomCode] = useState("coastal-dusk-test");
   const [joining, setJoining] = useState(false);
-  const [joinError, setJoinError] = useState<string | null>(null);
+  const [roomError, setRoomError] = useState<string | null>(null);
   const [endedNotice, setEndedNotice] = useState<string | null>(null);
 
   // Active call state
+  const [activeRoomName, setActiveRoomName] = useState("");
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     ConnectionState.Disconnected
   );
@@ -119,7 +159,9 @@ export default function CallPage() {
 
   // Local & partner media
   const [isMuted, setIsMuted] = useState(false);
+  const [partnerId, setPartnerId] = useState<string | null>(null);
   const [partnerName, setPartnerName] = useState<string | null>(null);
+  const [partnerArea, setPartnerArea] = useState<string | null>(null);
   const [partnerMuted, setPartnerMuted] = useState(false);
   const [partnerVideoTrack, setPartnerVideoTrack] = useState<RemoteTrack | null>(null);
   const [localLiveVideoTrack, setLocalLiveVideoTrack] = useState<LocalVideoTrack | null>(null);
@@ -144,8 +186,9 @@ export default function CallPage() {
   const [sparkVisible, setSparkVisible] = useState(true);
 
   // Post-call Like / Pass & Match state
-  const [postCallPartner, setPostCallPartner] = useState<string | null>(null);
-  const [postCallRoom, setPostCallRoom] = useState<string>("coastal-dusk-test");
+  const [postCallPartnerId, setPostCallPartnerId] = useState<string | null>(null);
+  const [postCallPartnerName, setPostCallPartnerName] = useState<string | null>(null);
+  const [postCallRoom, setPostCallRoom] = useState<string>("");
   const [myDecision, setMyDecision] = useState<"none" | "like" | "pass">("none");
   const [waitingForMutual, setWaitingForMutual] = useState(false);
   const [decisionBusy, setDecisionBusy] = useState(false);
@@ -153,10 +196,11 @@ export default function CallPage() {
   // Matches & Chat state
   const [myMatches, setMyMatches] = useState<MatchRecord[]>([]);
   const [activeMatch, setActiveMatch] = useState<MatchRecord | null>(null);
+  const [partnerVault, setPartnerVault] = useState<PartnerVaultProfile | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [sendingChat, setSendingChat] = useState(false);
-  const [showMatchProfileCard, setShowMatchProfileCard] = useState(false);
+  const [showMatchProfileCard, setShowMatchProfileCard] = useState(true);
 
   // Safety & Report sheet
   const [showSafetySheet, setShowSafetySheet] = useState(false);
@@ -186,7 +230,9 @@ export default function CallPage() {
 
   const videoReqMeRef = useRef(false);
   const previewTrackRef = useRef<LocalVideoTrack | null>(null);
-  const lastPartnerRef = useRef<string | null>(null);
+  const lastPartnerIdRef = useRef<string | null>(null);
+  const lastPartnerNameRef = useRef<string | null>(null);
+  const connectingLockRef = useRef(false);
 
   useEffect(() => {
     videoReqMeRef.current = videoRequestedByMe;
@@ -213,30 +259,97 @@ export default function CallPage() {
     }
   }, []);
 
-  // Load saved matches when name is typed in lobby
-  const loadMyMatches = useCallback(async (name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setMyMatches([]);
-      return;
-    }
+  // Load authenticated user session on mount
+  const refreshSession = useCallback(async () => {
+    setAuthChecking(true);
     try {
-      const res = await fetch(`/api/messages?identity=${encodeURIComponent(trimmed)}`);
-      if (!res.ok) return;
-      const data = (await res.json()) as { matches?: MatchRecord[] };
-      setMyMatches(data.matches || []);
+      const res = await fetch("/api/auth/me", { cache: "no-store" });
+      const data = (await res.json()) as {
+        authenticated?: boolean;
+        suspended?: boolean;
+        profile?: UserProfile | null;
+      };
+      if (data.authenticated && data.profile) {
+        if (data.suspended) {
+          setUserProfile(null);
+          setLoginError("This account has been suspended pending safety review.");
+        } else {
+          setUserProfile(data.profile);
+        }
+      } else {
+        setUserProfile(null);
+      }
     } catch {
-      // Ignore network hiccups
+      setUserProfile(null);
+    } finally {
+      setAuthChecking(false);
     }
   }, []);
 
   useEffect(() => {
-    if (viewMode !== "lobby") return;
-    const t = setTimeout(() => {
-      loadMyMatches(displayName);
-    }, 350);
-    return () => clearTimeout(t);
-  }, [displayName, viewMode, loadMyMatches]);
+    refreshSession();
+  }, [refreshSession]);
+
+  const loadMyMatches = useCallback(async () => {
+    if (!userProfile) {
+      setMyMatches([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/messages?identity=${encodeURIComponent(userProfile.id)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { matches?: MatchRecord[] };
+      setMyMatches(data.matches || []);
+    } catch {
+      // Ignore transient hiccups
+    }
+  }, [userProfile]);
+
+  useEffect(() => {
+    if (viewMode === "greenroom" && userProfile) {
+      loadMyMatches();
+    }
+  }, [viewMode, userProfile, loadMyMatches]);
+
+  // Sign in handler
+  const handleInlineLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+    setLoginBusy(true);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        profile?: UserProfile;
+      };
+      if (!res.ok) {
+        setLoginError(data.error || "Sign in failed.");
+        return;
+      }
+      if (data.profile) {
+        setUserProfile(data.profile);
+        setLoginPassword("");
+      } else {
+        await refreshSession();
+      }
+    } catch {
+      setLoginError("Network error. Please try again.");
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setInQueue(false);
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    setUserProfile(null);
+    setMyMatches([]);
+    setEndedNotice(null);
+  };
 
   // Wake Lock during live call
   const requestWakeLock = useCallback(async () => {
@@ -278,7 +391,7 @@ export default function CallPage() {
     };
   }, [viewMode, requestWakeLock, releaseWakeLock]);
 
-  // Quiet call timer
+  // Timers
   useEffect(() => {
     if (viewMode !== "call") {
       setElapsedSeconds(0);
@@ -289,6 +402,17 @@ export default function CallPage() {
     }, 1000);
     return () => clearInterval(interval);
   }, [viewMode]);
+
+  useEffect(() => {
+    if (!inQueue) {
+      setQueueWaitSeconds(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setQueueWaitSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [inQueue]);
 
   // Stop local preview cleanly before enabling live camera
   const stopPreviewTrack = useCallback(() => {
@@ -320,7 +444,7 @@ export default function CallPage() {
     }
   }, [stopPreviewTrack, showToast]);
 
-  // Attach remote video
+  // Attach remote & local video
   useEffect(() => {
     const videoEl = remoteVideoRef.current;
     if (!videoEl || !partnerVideoTrack) return;
@@ -330,7 +454,6 @@ export default function CallPage() {
     };
   }, [partnerVideoTrack, videoUnlocked]);
 
-  // Attach local video
   const activeLocalVideoTrack = videoUnlocked ? localLiveVideoTrack : previewTrack;
   useEffect(() => {
     const videoEl = localVideoRef.current;
@@ -347,7 +470,6 @@ export default function CallPage() {
       setIsLightingDark(false);
       return;
     }
-
     const canvas = document.createElement("canvas");
     canvas.width = 48;
     canvas.height = 36;
@@ -454,9 +576,13 @@ export default function CallPage() {
   };
 
   const syncRemoteParticipant = useCallback((participant: RemoteParticipant) => {
-    const remoteName = participant.name || participant.identity || "Your Match";
-    setPartnerName(remoteName);
-    lastPartnerRef.current = remoteName;
+    const remoteDisplay = participant.name || participant.identity || "Your Match";
+    setPartnerName((prev) => prev || remoteDisplay);
+    lastPartnerNameRef.current = lastPartnerNameRef.current || remoteDisplay;
+    if (!lastPartnerIdRef.current && participant.identity) {
+      lastPartnerIdRef.current = participant.identity;
+      setPartnerId((prev) => prev || participant.identity);
+    }
     setPartnerMuted(!participant.isMicrophoneEnabled);
 
     participant.trackPublications.forEach((pub) => {
@@ -472,13 +598,13 @@ export default function CallPage() {
     });
   }, []);
 
-  const fetchLiveKitToken = async (room: string, name: string) => {
+  const fetchLiveKitToken = async (room: string, name: string, identity: string) => {
     const body = JSON.stringify({
       room,
       roomName: room,
       name,
       participantName: name,
-      identity: name,
+      identity,
     });
 
     let res = await fetch("/api/calls/test-token", {
@@ -493,7 +619,7 @@ export default function CallPage() {
         roomName: room,
         name,
         participantName: name,
-        identity: name,
+        identity,
       });
       res = await fetch(`/api/calls/test-token?${qs.toString()}`);
     }
@@ -513,199 +639,288 @@ export default function CallPage() {
     return { token, serverUrl };
   };
 
-  const handleJoinRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedName = displayName.trim();
-    const trimmedRoom = roomName.trim() || "coastal-dusk-test";
-    if (!trimmedName) {
-      setJoinError("Enter your first name to join the room.");
-      return;
-    }
+  // Connect into a LiveKit room (called either automatically from Queue or from Manual Test Room)
+  const connectToLiveKitRoom = useCallback(
+    async (
+      targetRoomName: string,
+      matchedPartner?: { id: string; displayName: string; areaLabel: string }
+    ) => {
+      if (!userProfile || connectingLockRef.current) return;
+      connectingLockRef.current = true;
+      setJoining(true);
+      setRoomError(null);
+      setEndedNotice(null);
 
-    setJoining(true);
-    setJoinError(null);
-    setEndedNotice(null);
+      try {
+        const { token, serverUrl } = await fetchLiveKitToken(
+          targetRoomName,
+          userProfile.display_name,
+          userProfile.id
+        );
 
-    try {
-      // Check if this user is suspended from prior safety reports
-      const safetyRes = await fetch("/api/safety/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identity: trimmedName }),
-      });
-      const safetyData = (await safetyRes.json().catch(() => ({}))) as {
-        allowed?: boolean;
-        reason?: string;
-      };
-      if (safetyData.allowed === false) {
-        setJoinError(safetyData.reason || "Unable to join due to safety restrictions.");
-        setJoining(false);
-        return;
-      }
+        const room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+        });
+        roomRef.current = room;
 
-      const { token, serverUrl } = await fetchLiveKitToken(trimmedRoom, trimmedName);
-
-      const room = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-      });
-      roomRef.current = room;
-      lastPartnerRef.current = null;
-
-      room.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
-        setConnectionState(state);
-      });
-
-      room.on(
-        RoomEvent.ConnectionQualityChanged,
-        (quality: ConnectionQuality, participant: Participant) => {
-          if (participant.isLocal) {
-            setSignalQuality(quality);
-          }
+        if (matchedPartner) {
+          setPartnerId(matchedPartner.id);
+          setPartnerName(matchedPartner.displayName);
+          setPartnerArea(matchedPartner.areaLabel);
+          lastPartnerIdRef.current = matchedPartner.id;
+          lastPartnerNameRef.current = matchedPartner.displayName;
+        } else {
+          setPartnerId(null);
+          setPartnerName(null);
+          setPartnerArea(null);
+          lastPartnerIdRef.current = null;
+          lastPartnerNameRef.current = null;
         }
-      );
 
-      room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
-        syncRemoteParticipant(participant);
-        showToast(`${participant.name || participant.identity} joined the call`);
-        if (videoReqMeRef.current) sendSignal({ type: "video_request" });
-      });
+        room.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
+          setConnectionState(state);
+        });
 
-      room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
-        const who = participant.name || participant.identity || "Your match";
-        lastPartnerRef.current = who;
-        setPartnerName(null);
-        setPartnerMuted(false);
-        setPartnerVideoTrack(null);
-        setVideoRequestedByPartner(false);
-        showToast(`${who} left the call. Tap Leave to decide if you want to match.`);
-      });
+        room.on(
+          RoomEvent.ConnectionQualityChanged,
+          (quality: ConnectionQuality, participant: Participant) => {
+            if (participant.isLocal) setSignalQuality(quality);
+          }
+        );
 
-      room.on(
-        RoomEvent.TrackSubscribed,
-        (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
-          const remoteName = participant.name || participant.identity || "Your Match";
-          setPartnerName(remoteName);
-          lastPartnerRef.current = remoteName;
+        room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+          syncRemoteParticipant(participant);
+          showToast(`${matchedPartner?.displayName || participant.name || "Your match"} connected`);
+          if (videoReqMeRef.current) sendSignal({ type: "video_request" });
+        });
+
+        room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+          const who = matchedPartner?.displayName || participant.name || "Your match";
+          setPartnerMuted(false);
+          setPartnerVideoTrack(null);
+          setVideoRequestedByPartner(false);
+          showToast(`${who} left the call. Tap Leave to decide if you want to match.`);
+        });
+
+        room.on(
+          RoomEvent.TrackSubscribed,
+          (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+            syncRemoteParticipant(participant);
+            if (track.kind === Track.Kind.Audio && remoteAudioRef.current) {
+              track.attach(remoteAudioRef.current);
+            }
+            if (track.kind === Track.Kind.Video) {
+              setPartnerVideoTrack(track);
+              setVideoUnlocked(true);
+            }
+          }
+        );
+
+        room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
           if (track.kind === Track.Kind.Audio && remoteAudioRef.current) {
-            track.attach(remoteAudioRef.current);
+            track.detach(remoteAudioRef.current);
           }
           if (track.kind === Track.Kind.Video) {
-            setPartnerVideoTrack(track);
-            setVideoUnlocked(true);
+            setPartnerVideoTrack(null);
           }
-        }
-      );
+        });
 
-      room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-        if (track.kind === Track.Kind.Audio && remoteAudioRef.current) {
-          track.detach(remoteAudioRef.current);
-        }
-        if (track.kind === Track.Kind.Video) {
-          setPartnerVideoTrack(null);
-        }
-      });
-
-      room.on(RoomEvent.TrackMuted, (pub: TrackPublication, participant: Participant) => {
-        if (pub.source === Track.Source.Microphone) {
-          if (participant.isLocal) setIsMuted(true);
-          else setPartnerMuted(true);
-        }
-      });
-
-      room.on(RoomEvent.TrackUnmuted, (pub: TrackPublication, participant: Participant) => {
-        if (pub.source === Track.Source.Microphone) {
-          if (participant.isLocal) setIsMuted(false);
-          else setPartnerMuted(false);
-        }
-      });
-
-      room.on(RoomEvent.LocalTrackPublished, (pub: TrackPublication) => {
-        if (pub.source === Track.Source.Camera && pub.videoTrack) {
-          setLocalLiveVideoTrack(pub.videoTrack as LocalVideoTrack);
-        }
-      });
-
-      room.on(RoomEvent.LocalTrackUnpublished, (pub: TrackPublication) => {
-        if (pub.source === Track.Source.Camera) {
-          setLocalLiveVideoTrack(null);
-        }
-      });
-
-      room.on(RoomEvent.DataReceived, (payload: Uint8Array, participant?: RemoteParticipant) => {
-        try {
-          const msg = JSON.parse(new TextDecoder().decode(payload)) as SignalMessage;
-          const who = participant?.name || participant?.identity || "Your match";
-
-          switch (msg.type) {
-            case "video_request":
-              if (videoReqMeRef.current) {
-                unlockLiveVideo();
-              } else {
-                setVideoRequestedByPartner(true);
-                triggerHaptic(25);
-              }
-              break;
-            case "video_cancel":
-              setVideoRequestedByPartner(false);
-              break;
-            case "video_decline":
-              setVideoRequestedByMe(false);
-              showToast(`${who} prefers to stay voice-only for now.`);
-              break;
-            case "spark_index":
-              setSparkIndex(msg.index % SPARK_WORDS.length);
-              setSparkVisible(true);
-              break;
+        room.on(RoomEvent.TrackMuted, (pub: TrackPublication, participant: Participant) => {
+          if (pub.source === Track.Source.Microphone) {
+            if (participant.isLocal) setIsMuted(true);
+            else setPartnerMuted(true);
           }
-        } catch {
-          // Ignore non-JSON packets
+        });
+
+        room.on(RoomEvent.TrackUnmuted, (pub: TrackPublication, participant: Participant) => {
+          if (pub.source === Track.Source.Microphone) {
+            if (participant.isLocal) setIsMuted(false);
+            else setPartnerMuted(false);
+          }
+        });
+
+        room.on(RoomEvent.LocalTrackPublished, (pub: TrackPublication) => {
+          if (pub.source === Track.Source.Camera && pub.videoTrack) {
+            setLocalLiveVideoTrack(pub.videoTrack as LocalVideoTrack);
+          }
+        });
+
+        room.on(RoomEvent.LocalTrackUnpublished, (pub: TrackPublication) => {
+          if (pub.source === Track.Source.Camera) {
+            setLocalLiveVideoTrack(null);
+          }
+        });
+
+        room.on(RoomEvent.DataReceived, (payload: Uint8Array, participant?: RemoteParticipant) => {
+          try {
+            const msg = JSON.parse(new TextDecoder().decode(payload)) as SignalMessage;
+            const who = matchedPartner?.displayName || participant?.name || "Your match";
+            switch (msg.type) {
+              case "video_request":
+                if (videoReqMeRef.current) {
+                  unlockLiveVideo();
+                } else {
+                  setVideoRequestedByPartner(true);
+                  triggerHaptic(25);
+                }
+                break;
+              case "video_cancel":
+                setVideoRequestedByPartner(false);
+                break;
+              case "video_decline":
+                setVideoRequestedByMe(false);
+                showToast(`${who} prefers to stay voice-only for now.`);
+                break;
+              case "spark_index":
+                setSparkIndex(msg.index % SPARK_WORDS.length);
+                setSparkVisible(true);
+                break;
+            }
+          } catch {
+            // Ignore non-JSON packets
+          }
+        });
+
+        await room.connect(serverUrl, token);
+        await room.startAudio().catch(() => {});
+        await room.localParticipant.setMicrophoneEnabled(true);
+        setIsMuted(false);
+        setConnectionState(room.state);
+
+        const existingPartners = Array.from(room.remoteParticipants.values());
+        if (existingPartners.length > 0) {
+          syncRemoteParticipant(existingPartners[0]);
         }
+
+        setActiveRoomName(targetRoomName);
+        setPostCallRoom(targetRoomName);
+        setInQueue(false);
+        setSparkVisible(true);
+        setViewMode("call");
+        triggerHaptic([20, 40, 20]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unable to connect to live call.";
+        setRoomError(msg);
+        setInQueue(false);
+        if (roomRef.current) {
+          await roomRef.current.disconnect().catch(() => {});
+          roomRef.current = null;
+        }
+      } finally {
+        setJoining(false);
+        connectingLockRef.current = false;
+      }
+    },
+    [userProfile, syncRemoteParticipant, sendSignal, showToast, unlockLiveVideo]
+  );
+
+  // Automated Sunday Drop Queue polling
+  const handleEnterQueue = async () => {
+    setRoomError(null);
+    setEndedNotice(null);
+    setInQueue(true);
+    triggerHaptic(15);
+
+    try {
+      const res = await fetch("/api/queue/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "join", allowRematch }),
       });
-
-      await room.connect(serverUrl, token);
-      await room.startAudio().catch(() => {});
-      await room.localParticipant.setMicrophoneEnabled(true);
-      setIsMuted(false);
-      setConnectionState(room.state);
-
-      const existingPartners = Array.from(room.remoteParticipants.values());
-      if (existingPartners.length > 0) {
-        syncRemoteParticipant(existingPartners[0]);
+      const data = (await res.json()) as {
+        status?: "waiting" | "matched";
+        waitingCount?: number;
+        roomName?: string;
+        partner?: { id: string; displayName: string; areaLabel: string };
+        error?: string;
+      };
+      if (!res.ok) {
+        setRoomError(data.error || "Could not enter queue.");
+        setInQueue(false);
+        return;
       }
-
-      setPostCallRoom(trimmedRoom);
-      setSparkVisible(true);
-      setViewMode("call");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unable to connect to call room.";
-      setJoinError(msg);
-      if (roomRef.current) {
-        await roomRef.current.disconnect().catch(() => {});
-        roomRef.current = null;
+      if (data.waitingCount) setWaitingCount(data.waitingCount);
+      if (data.status === "matched" && data.roomName && data.partner) {
+        await connectToLiveKitRoom(data.roomName, data.partner);
       }
-    } finally {
-      setJoining(false);
+    } catch {
+      setRoomError("Network error while joining queue.");
+      setInQueue(false);
     }
   };
 
-  // Leave call: route to Post-Call Decision if we talked with someone, otherwise Lobby
+  const handleLeaveQueue = async () => {
+    setInQueue(false);
+    await fetch("/api/queue/match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "leave" }),
+    }).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!inQueue || viewMode !== "greenroom") return;
+
+    const pollQueue = async () => {
+      if (connectingLockRef.current) return;
+      try {
+        const res = await fetch("/api/queue/match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "poll", allowRematch }),
+        });
+        const data = (await res.json()) as {
+          status?: "waiting" | "matched";
+          waitingCount?: number;
+          roomName?: string;
+          partner?: { id: string; displayName: string; areaLabel: string };
+          error?: string;
+        };
+        if (!res.ok) {
+          setRoomError(data.error || "Queue disconnected.");
+          setInQueue(false);
+          return;
+        }
+        if (data.waitingCount) setWaitingCount(data.waitingCount);
+        if (data.status === "matched" && data.roomName && data.partner) {
+          await connectToLiveKitRoom(data.roomName, data.partner);
+        }
+      } catch {
+        // Retry on next poll
+      }
+    };
+
+    const interval = setInterval(pollQueue, 2500);
+    return () => clearInterval(interval);
+  }, [inQueue, viewMode, allowRematch, connectToLiveKitRoom]);
+
+  // Leave call
   const handleLeaveCall = useCallback(
     async (options?: { skipPostCall?: boolean; notice?: string }) => {
       triggerHaptic(30);
       stopPreviewTrack();
       await releaseWakeLock();
 
-      const partnerWeSpokeWith = partnerName || lastPartnerRef.current;
+      const pId = partnerId || lastPartnerIdRef.current;
+      const pName = partnerName || lastPartnerNameRef.current;
 
       if (roomRef.current) {
         await roomRef.current.disconnect().catch(() => {});
         roomRef.current = null;
       }
 
+      await fetch("/api/queue/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "finish_call" }),
+      }).catch(() => {});
+
       setConnectionState(ConnectionState.Disconnected);
       setSignalQuality(ConnectionQuality.Unknown);
+      setPartnerId(null);
       setPartnerName(null);
+      setPartnerArea(null);
       setPartnerMuted(false);
       setPartnerVideoTrack(null);
       setLocalLiveVideoTrack(null);
@@ -718,19 +933,21 @@ export default function CallPage() {
       setPipCorner("top-right");
       setPipDragPos(null);
 
-      if (!options?.skipPostCall && partnerWeSpokeWith) {
-        setPostCallPartner(partnerWeSpokeWith);
+      if (!options?.skipPostCall && pName) {
+        setPostCallPartnerId(pId || pName.toLowerCase());
+        setPostCallPartnerName(pName);
         setMyDecision("none");
         setWaitingForMutual(false);
         setViewMode("post-call");
       } else {
-        setPostCallPartner(null);
+        setPostCallPartnerId(null);
+        setPostCallPartnerName(null);
         setActiveMatch(null);
-        setViewMode("lobby");
+        setViewMode("greenroom");
         if (options?.notice) setEndedNotice(options.notice);
       }
     },
-    [partnerName, releaseWakeLock, stopPreviewTrack]
+    [partnerId, partnerName, releaseWakeLock, stopPreviewTrack]
   );
 
   // Cleanup on unmount
@@ -744,9 +961,9 @@ export default function CallPage() {
     };
   }, [releaseWakeLock, stopPreviewTrack]);
 
-  // Post-call decision submit (Like or Pass)
+  // Post-call decision
   const handlePostCallDecision = async (decision: "like" | "pass") => {
-    if (!postCallPartner || !displayName.trim()) return;
+    if (!postCallPartnerName || !userProfile) return;
     setDecisionBusy(true);
     triggerHaptic(decision === "like" ? [20, 30, 20] : 15);
 
@@ -756,8 +973,10 @@ export default function CallPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           roomName: postCallRoom,
-          voterName: displayName.trim(),
-          targetName: postCallPartner,
+          voterId: userProfile.id,
+          voterName: userProfile.display_name,
+          targetId: postCallPartnerId || postCallPartnerName,
+          targetName: postCallPartnerName,
           decision,
         }),
       });
@@ -771,8 +990,8 @@ export default function CallPage() {
       setMyDecision(decision);
 
       if (decision === "pass" || data.blocked) {
-        setViewMode("lobby");
-        setEndedNotice("Call ended. Ready whenever you want to hop into the next one.");
+        setViewMode("greenroom");
+        setEndedNotice("Call ended. Ready whenever you want to hop back into the Green Room.");
         return;
       }
 
@@ -792,16 +1011,16 @@ export default function CallPage() {
     }
   };
 
-  // Poll for mutual match while waiting on Post-Call screen
+  // Poll for mutual match
   useEffect(() => {
-    if (viewMode !== "post-call" || !waitingForMutual || !postCallPartner) return;
+    if (viewMode !== "post-call" || !waitingForMutual || !postCallPartnerId || !userProfile) return;
 
     const poll = async () => {
       try {
         const qs = new URLSearchParams({
           roomName: postCallRoom,
-          voterName: displayName.trim(),
-          targetName: postCallPartner,
+          voterId: userProfile.id,
+          targetId: postCallPartnerId,
         });
         const res = await fetch(`/api/calls/decision?${qs.toString()}`);
         if (!res.ok) return;
@@ -818,19 +1037,19 @@ export default function CallPage() {
           triggerHaptic([30, 50, 30]);
         } else if (data.waiting === false) {
           setWaitingForMutual(false);
-          setViewMode("lobby");
+          setViewMode("greenroom");
           setEndedNotice("Not a mutual match this time. Ready for the next call.");
         }
       } catch {
-        // Retry on next tick
+        // Retry next tick
       }
     };
 
     const interval = setInterval(poll, 2500);
     return () => clearInterval(interval);
-  }, [viewMode, waitingForMutual, postCallPartner, postCallRoom, displayName]);
+  }, [viewMode, waitingForMutual, postCallPartnerId, postCallRoom, userProfile]);
 
-  // Poll messages when inside Post-Call Chat view
+  // Poll messages & unlocked Private Vault inside Chat
   const fetchChatMessages = useCallback(async (matchId: string) => {
     try {
       const res = await fetch(`/api/messages?matchId=${encodeURIComponent(matchId)}`);
@@ -838,21 +1057,26 @@ export default function CallPage() {
       const data = (await res.json()) as {
         messages?: ChatMessage[];
         blocked?: boolean;
+        partnerProfile?: PartnerVaultProfile | null;
       };
       if (data.blocked) {
         setActiveMatch(null);
-        setViewMode("lobby");
+        setViewMode("greenroom");
         setEndedNotice("This conversation is no longer active.");
         return;
       }
       setChatMessages(data.messages || []);
+      if (data.partnerProfile) {
+        setPartnerVault(data.partnerProfile);
+      }
     } catch {
-      // Retry on next poll
+      // Retry next poll
     }
   }, []);
 
   useEffect(() => {
     if (viewMode !== "chat" || !activeMatch) return;
+    setPartnerVault(null);
     fetchChatMessages(activeMatch.id);
     const interval = setInterval(() => {
       fetchChatMessages(activeMatch.id);
@@ -869,7 +1093,7 @@ export default function CallPage() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = chatInput.trim();
-    if (!text || !activeMatch || !displayName.trim()) return;
+    if (!text || !activeMatch || !userProfile) return;
 
     setSendingChat(true);
     try {
@@ -878,7 +1102,8 @@ export default function CallPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           matchId: activeMatch.id,
-          senderName: displayName.trim(),
+          senderId: userProfile.id,
+          senderName: userProfile.display_name,
           text,
         }),
       });
@@ -896,15 +1121,24 @@ export default function CallPage() {
     }
   };
 
-  // Report & Block (works in Call, Post-Call, and Chat)
-  const getReportTarget = () => {
-    if (viewMode === "call") return partnerName || lastPartnerRef.current;
-    if (viewMode === "post-call") return postCallPartner;
-    if (viewMode === "chat" && activeMatch) {
-      const me = displayName.trim().toLowerCase();
-      return activeMatch.user_a === me ? activeMatch.user_b_display : activeMatch.user_a_display;
+  // Report & Block
+  const getReportTarget = (): { id: string | null; name: string | null } => {
+    if (viewMode === "call") {
+      return {
+        id: partnerId || lastPartnerIdRef.current,
+        name: partnerName || lastPartnerNameRef.current,
+      };
     }
-    return null;
+    if (viewMode === "post-call") {
+      return { id: postCallPartnerId, name: postCallPartnerName };
+    }
+    if (viewMode === "chat" && activeMatch && userProfile) {
+      const meId = userProfile.id.toLowerCase();
+      return activeMatch.user_a === meId
+        ? { id: activeMatch.user_b, name: activeMatch.user_b_display }
+        : { id: activeMatch.user_a, name: activeMatch.user_a_display };
+    }
+    return { id: null, name: null };
   };
 
   const handleReportAndBlock = async (reason: string) => {
@@ -916,14 +1150,15 @@ export default function CallPage() {
       "Safety report saved and this person is now permanently blocked from matching with you.";
 
     try {
-      if (target && displayName.trim()) {
+      if ((target.id || target.name) && userProfile) {
         const res = await fetch("/api/calls/terminate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            roomName: viewMode === "call" ? roomName : postCallRoom,
-            reporter: displayName.trim(),
-            reported: target,
+            roomName: activeRoomName || postCallRoom,
+            reporter: userProfile.id,
+            reported: target.name || target.id,
+            reportedId: target.id || undefined,
             reason,
             matchId: activeMatch?.id,
           }),
@@ -934,9 +1169,9 @@ export default function CallPage() {
           autoSuspended?: boolean;
         };
         if (data.autoSuspended) {
-          resultNotice = `Report saved and ${target} was blocked and auto-suspended after ${data.reportCount} reports.`;
+          resultNotice = `Report saved. ${target.name || "This account"} was blocked and auto-suspended after ${data.reportCount} reports.`;
         } else if (data.ok) {
-          resultNotice = `Report saved and ${target} is permanently blocked from matching with you.`;
+          resultNotice = `Report saved and ${target.name || "this person"} is permanently blocked from matching with you.`;
         }
       }
     } finally {
@@ -946,7 +1181,7 @@ export default function CallPage() {
     }
   };
 
-  // Call control handlers
+  // Live call media handlers
   const handleToggleMute = async () => {
     const room = roomRef.current;
     if (!room) return;
@@ -1036,7 +1271,7 @@ export default function CallPage() {
       ? 3
       : 0;
 
-  // Shared Safety Sheet Modal
+  const reportTarget = getReportTarget();
   const safetySheetModal = showSafetySheet && (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-4">
       <div className="w-full max-w-md rounded-2xl border border-[#F0E2CC]/20 bg-[#171215] p-5 shadow-2xl">
@@ -1056,7 +1291,7 @@ export default function CallPage() {
         </div>
 
         <p className="mt-1.5 text-xs text-[#A89A90]">
-          Reporting immediately disconnects and blocks {getReportTarget() || "this user"} from matching with you again. Repeat reports auto-suspend accounts.
+          Reporting immediately disconnects and blocks {reportTarget.name || "this user"} from matching with you again. Repeat reports auto-suspend accounts.
         </p>
 
         <div className="mt-4 space-y-2">
@@ -1086,73 +1321,229 @@ export default function CallPage() {
     </div>
   );
 
-  // ---------------- 1. LOBBY VIEW ----------------
-  if (viewMode === "lobby") {
-    const meLower = displayName.trim().toLowerCase();
+  // ---------------- 0. AUTH LOADING OR SIGN-IN GATE ----------------
+  if (authChecking) {
+    return (
+      <main className="min-h-[100dvh] bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4">
+        <p className="text-sm text-[#B3A499]">Loading your Coastal Dusk session...</p>
+      </main>
+    );
+  }
+
+  if (!userProfile) {
     return (
       <main className="min-h-[100dvh] bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4">
         <div className="w-full max-w-md space-y-4">
-          <div className="rounded-2xl border border-[#F0E2CC]/15 bg-[#171215] p-6 shadow-2xl">
-            <div className="mb-5">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-xs text-[#A89A90] hover:text-[#F5EDE2] transition"
+          >
+            &larr; Back to Overview
+          </Link>
+
+          <div className="rounded-3xl border border-[#F0E2CC]/15 bg-[#171215] p-6 shadow-2xl space-y-5">
+            <div>
               <span className="inline-flex items-center rounded-full border border-[#E5C17B]/35 bg-[#E5C17B]/10 px-3 py-1 text-xs font-medium tracking-wide text-[#E5C17B]">
-                Coastal Dusk Live Room
+                Coastal Dusk Green Room
               </span>
-              <h1 className="mt-3 font-serif text-2xl font-semibold tracking-tight text-[#F8F1E7]">
-                Voice-First Test Call
+              <h1 className="mt-3 font-serif text-2xl font-semibold text-[#F8F1E7]">
+                Sign in to join tonight&apos;s Drop
               </h1>
-              <p className="mt-1.5 text-sm text-[#B3A499]">
-                Start with voice. Video unlocks mutually, and after you hang up you can choose whether to match and text.
+              <p className="mt-1 text-xs text-[#B3A499]">
+                Sign in with the email and password from your Cohort 01 signup so we can pair you using your SWFL preferences.
               </p>
             </div>
 
-            {endedNotice && (
-              <div className="mb-4 rounded-xl border border-[#E5C17B]/30 bg-[#251E18] px-4 py-3 text-sm text-[#F0D9AE]">
-                {endedNotice}
+            {loginError && (
+              <div className="rounded-xl border border-[#8E434F] bg-[#31171C] px-4 py-3 text-xs text-[#F4C4CB]">
+                {loginError}
               </div>
             )}
 
-            {joinError && (
-              <div className="mb-4 rounded-xl border border-[#8E434F] bg-[#31171C] px-4 py-3 text-sm text-[#F4C4CB]">
-                {joinError}
-              </div>
-            )}
-
-            <form onSubmit={handleJoinRoom} className="space-y-4">
+            <form onSubmit={handleInlineLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
-                  Your First Name
+                <label className="block text-[11px] font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
+                  Email
                 </label>
                 <input
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="e.g., Justin"
-                  autoComplete="given-name"
-                  className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-base text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-sm text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
-                  Room Code
+                <label className="block text-[11px] font-medium uppercase tracking-wider text-[#A89A90] mb-1.5">
+                  Password
                 </label>
                 <input
-                  type="text"
-                  value={roomName}
-                  onChange={(e) => setRoomName(e.target.value)}
-                  placeholder="coastal-dusk-test"
-                  className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-base text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Your password"
+                  autoComplete="current-password"
+                  className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#100C0E] px-4 text-sm text-[#F8F1E7] placeholder:text-[#6D6059] focus:border-[#E5C17B] focus:outline-none"
                 />
               </div>
 
               <button
                 type="submit"
-                disabled={joining}
-                className="w-full min-h-[48px] rounded-xl bg-[#E5C17B] px-5 text-base font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
+                disabled={loginBusy}
+                className="w-full min-h-[48px] rounded-xl bg-[#E5C17B] px-5 text-sm font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
               >
-                {joining ? "Connecting Audio..." : "Join Voice Room"}
+                {loginBusy ? "Signing In..." : "Sign In"}
               </button>
             </form>
+
+            <p className="text-center text-xs text-[#A89A90]">
+              New to Coastal Dusk?{" "}
+              <Link href="/join" className="text-[#E5C17B] underline hover:text-[#F2D7A4]">
+                Reserve your SWFL spot
+              </Link>
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ---------------- 1. SUNDAY DROP GREEN ROOM ----------------
+  if (viewMode === "greenroom") {
+    const meIdLower = userProfile.id.toLowerCase();
+    return (
+      <main className="min-h-[100dvh] bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4">
+        <div className="w-full max-w-md space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-[#E5C17B]">
+              Signed in as {userProfile.display_name}
+            </span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="text-xs text-[#A89A90] hover:text-[#F5EDE2] underline"
+            >
+              Sign out
+            </button>
+          </div>
+
+          <div className="rounded-3xl border border-[#F0E2CC]/15 bg-[#171215] p-6 shadow-2xl space-y-5">
+            <div>
+              <span className="inline-flex items-center rounded-full border border-[#E5C17B]/35 bg-[#E5C17B]/10 px-3 py-1 text-xs font-medium tracking-wide text-[#E5C17B]">
+                Sunday Drop Green Room
+              </span>
+              <h1 className="mt-3 font-serif text-2xl font-semibold text-[#F8F1E7]">
+                {inQueue ? "Finding your next conversation..." : `Ready, ${userProfile.display_name}?`}
+              </h1>
+              <p className="mt-1.5 text-xs text-[#B3A499] leading-relaxed">
+                {inQueue
+                  ? `Looking for a compatible SWFL match within ${userProfile.max_drive_miles} miles (ages ${userProfile.min_age_pref} to ${userProfile.max_age_pref}). Your call starts voice-first automatically.`
+                  : "Tap below to enter the live matchmaking queue. We pair you automatically by age range, SWFL drive distance, and safety filters."}
+              </p>
+            </div>
+
+            {endedNotice && (
+              <div className="rounded-xl border border-[#E5C17B]/30 bg-[#251E18] px-4 py-3 text-xs text-[#F0D9AE]">
+                {endedNotice}
+              </div>
+            )}
+
+            {roomError && (
+              <div className="rounded-xl border border-[#8E434F] bg-[#31171C] px-4 py-3 text-xs text-[#F4C4CB]">
+                {roomError}
+              </div>
+            )}
+
+            {/* Profile matching summary */}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Your Area</p>
+                <p className="mt-0.5 text-[#F5EDE2]">{userProfile.area_label}</p>
+              </div>
+              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#110D10] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Match Range</p>
+                <p className="mt-0.5 text-[#F5EDE2]">
+                  Ages {userProfile.min_age_pref}-{userProfile.max_age_pref}, {userProfile.max_drive_miles} mi
+                </p>
+              </div>
+            </div>
+
+            {!inQueue ? (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  disabled={joining}
+                  onClick={handleEnterQueue}
+                  className="w-full min-h-[50px] rounded-2xl bg-[#E5C17B] px-5 text-base font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
+                >
+                  {joining ? "Connecting to Call..." : "Enter Tonight's Queue"}
+                </button>
+
+                <label className="flex items-center gap-2.5 rounded-xl border border-[#F0E2CC]/10 bg-[#110D10] px-3.5 py-2.5 text-xs text-[#C9BCB0] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={allowRematch}
+                    onChange={(e) => setAllowRematch(e.target.checked)}
+                    className="h-4 w-4 accent-[#E5C17B]"
+                  />
+                  <span>Beta test mode: allow re-matching recent test partners</span>
+                </label>
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowManualRoom((prev) => !prev)}
+                    className="text-[11px] text-[#A89A90] hover:text-[#E5C17B] underline"
+                  >
+                    {showManualRoom ? "Hide manual room test" : "Join a manual test room code instead"}
+                  </button>
+                </div>
+
+                {showManualRoom && (
+                  <div className="rounded-xl border border-[#F0E2CC]/15 bg-[#110D10] p-3 space-y-2.5">
+                    <input
+                      type="text"
+                      value={manualRoomCode}
+                      onChange={(e) => setManualRoomCode(e.target.value)}
+                      placeholder="coastal-dusk-test"
+                      className="w-full min-h-[42px] rounded-xl border border-[#F0E2CC]/20 bg-[#171215] px-3 text-sm text-[#F8F1E7] focus:border-[#E5C17B] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={joining}
+                      onClick={() => connectToLiveKitRoom(manualRoomCode.trim() || "coastal-dusk-test")}
+                      className="w-full min-h-[42px] rounded-xl border border-[#E5C17B]/40 bg-[#251E18] text-xs font-semibold text-[#F0D9AE] hover:bg-[#31271F]"
+                    >
+                      Join Manual Room
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-[#E5C17B]/35 bg-[#211A16] p-4 text-center space-y-1.5">
+                  <div className="mx-auto h-3 w-3 rounded-full bg-[#E5C17B] animate-pulse" />
+                  <p className="text-sm font-medium text-[#F8F1E7]">
+                    Waiting in Green Room ({formatDuration(queueWaitSeconds)})
+                  </p>
+                  <p className="text-xs text-[#C9BCB0]">
+                    {waitingCount} {waitingCount === 1 ? "person" : "people"} currently in queue
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleLeaveQueue}
+                  className="w-full min-h-[46px] rounded-xl border border-[#6E3943] bg-[#291519] text-sm font-semibold text-[#EBB8BF] hover:bg-[#3A1E24] transition"
+                >
+                  Leave Queue
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Saved Mutual Matches */}
@@ -1163,7 +1554,7 @@ export default function CallPage() {
               </p>
               <div className="space-y-2">
                 {myMatches.map((m) => {
-                  const otherName = m.user_a === meLower ? m.user_b_display : m.user_a_display;
+                  const otherName = m.user_a === meIdLower ? m.user_b_display : m.user_a_display;
                   return (
                     <button
                       key={m.id}
@@ -1193,19 +1584,19 @@ export default function CallPage() {
       <main className="fixed inset-0 bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4 overflow-y-auto">
         <div className="w-full max-w-md rounded-2xl border border-[#F0E2CC]/18 bg-[#171215] p-6 shadow-2xl text-center">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[#E5C17B]/40 bg-[#221B1D] font-serif text-2xl font-semibold text-[#E5C17B]">
-            {(postCallPartner || "?").charAt(0).toUpperCase()}
+            {(postCallPartnerName || "?").charAt(0).toUpperCase()}
           </div>
 
           <h1 className="mt-4 font-serif text-2xl font-medium text-[#F8F1E7]">
             {waitingForMutual
-              ? `You liked ${postCallPartner}`
-              : `Keep talking with ${postCallPartner}?`}
+              ? `You liked ${postCallPartnerName}`
+              : `Keep talking with ${postCallPartnerName}?`}
           </h1>
 
           <p className="mt-2 text-sm text-[#B3A499]">
             {waitingForMutual
-              ? `Waiting to see if ${postCallPartner} wants to match too. If it's mutual, private messaging will open right away.`
-              : "If you both say yes, you will unlock private messages and can decide what to share before meeting."}
+              ? `Waiting to see if ${postCallPartnerName} wants to match too. If it is mutual, private messaging and their Vault details will unlock right away.`
+              : "If you both say yes, you will unlock private messages and see each other's Private Vault details."}
           </p>
 
           {!waitingForMutual && myDecision === "none" ? (
@@ -1216,7 +1607,7 @@ export default function CallPage() {
                 onClick={() => handlePostCallDecision("like")}
                 className="w-full min-h-[48px] rounded-xl bg-[#E5C17B] text-base font-semibold text-[#1A1310] hover:bg-[#EED093] transition disabled:opacity-60"
               >
-                {decisionBusy ? "Saving..." : `Yes, Keep Talking with ${postCallPartner}`}
+                {decisionBusy ? "Saving..." : `Yes, Keep Talking with ${postCallPartnerName}`}
               </button>
 
               <button
@@ -1237,11 +1628,11 @@ export default function CallPage() {
                 type="button"
                 onClick={() => {
                   setWaitingForMutual(false);
-                  setViewMode("lobby");
+                  setViewMode("greenroom");
                 }}
                 className="w-full min-h-[46px] rounded-xl border border-[#F0E2CC]/20 bg-[#1F191C] text-sm font-medium text-[#DDD0C2] hover:bg-[#2B2327]"
               >
-                Back to Lobby (We will save it if they match)
+                Back to Green Room (Saved if they match)
               </button>
             </div>
           )}
@@ -1253,7 +1644,7 @@ export default function CallPage() {
               className="min-h-[44px] px-4 rounded-xl text-xs font-semibold text-[#EBB8BF] hover:bg-[#291519] transition inline-flex items-center gap-1.5"
             >
               <ShieldIcon className="w-4 h-4" />
-              <span>Report or Block {postCallPartner}</span>
+              <span>Report or Block {postCallPartnerName}</span>
             </button>
           </div>
         </div>
@@ -1264,20 +1655,19 @@ export default function CallPage() {
 
   // ---------------- 3. MUTUAL MATCH & POST-CALL MESSAGES VIEW ----------------
   if (viewMode === "chat" && activeMatch) {
-    const meLower = displayName.trim().toLowerCase();
+    const meIdLower = userProfile.id.toLowerCase();
     const otherName =
-      activeMatch.user_a === meLower ? activeMatch.user_b_display : activeMatch.user_a_display;
+      activeMatch.user_a === meIdLower ? activeMatch.user_b_display : activeMatch.user_a_display;
 
     return (
       <div className="fixed inset-0 flex flex-col bg-[#0F0C0E] text-[#F5EDE2] overflow-hidden">
-        {/* Chat Header */}
         <header className="shrink-0 flex items-center justify-between gap-2 px-3 py-2.5 bg-[#141013] border-b border-[#F0E2CC]/15">
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
               onClick={() => {
                 setActiveMatch(null);
-                setViewMode("lobby");
+                setViewMode("greenroom");
               }}
               className="min-h-[44px] px-3 rounded-xl border border-[#F0E2CC]/15 bg-[#1E181C] text-xs font-medium text-[#E6DACB] hover:bg-[#292126]"
             >
@@ -1289,6 +1679,7 @@ export default function CallPage() {
               </p>
               <h2 className="truncate font-serif text-base font-medium text-[#F8F1E7]">
                 {otherName}
+                {partnerVault?.age ? `, ${partnerVault.age}` : ""}
               </h2>
             </div>
           </div>
@@ -1299,7 +1690,7 @@ export default function CallPage() {
               onClick={() => setShowMatchProfileCard((prev) => !prev)}
               className="min-h-[44px] px-3 rounded-xl border border-[#E5C17B]/40 bg-[#251E18] text-xs font-medium text-[#F0D9AE] hover:bg-[#31271F]"
             >
-              {showMatchProfileCard ? "Hide Info" : "Match Info"}
+              {showMatchProfileCard ? "Hide Vault" : "Match Vault"}
             </button>
             <button
               type="button"
@@ -1312,23 +1703,40 @@ export default function CallPage() {
           </div>
         </header>
 
-        {/* Expandable Post-Call Match Info Card */}
+        {/* Unlocked Private Vault Profile Card */}
         {showMatchProfileCard && (
           <div className="shrink-0 bg-[#181316] border-b border-[#F0E2CC]/15 px-4 py-3">
-            <div className="mx-auto max-w-xl grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Region</p>
-                <p className="mt-0.5 text-[#F5EDE2]">Southwest Florida</p>
+            {partnerVault ? (
+              <div className="mx-auto max-w-xl grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Area &amp; Height</p>
+                  <p className="mt-0.5 text-[#F5EDE2]">
+                    {partnerVault.areaLabel} ({partnerVault.height})
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Occupation</p>
+                  <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.occupation}</p>
+                </div>
+                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Intent &amp; Smoking</p>
+                  <p className="mt-0.5 text-[#F5EDE2]">
+                    {partnerVault.intent} / {partnerVault.smoking}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[#E5C17B]/25 bg-[#241D17] p-2.5">
+                  <p className="text-[10px] uppercase tracking-wider text-[#E5C17B]">Favorite First-Meet Spot</p>
+                  <p className="mt-0.5 text-[#F8F1E7]">{partnerVault.firstMeetSpot}</p>
+                </div>
               </div>
-              <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Status</p>
-                <p className="mt-0.5 text-[#E5C17B]">Matched after live call</p>
+            ) : (
+              <div className="mx-auto max-w-xl text-xs text-[#A89A90]">
+                Southwest Florida mutual match
               </div>
-            </div>
+            )}
           </div>
         )}
 
-        {/* Messages Thread */}
         <section className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
           <div className="mx-auto max-w-xl space-y-3">
             {chatMessages.length === 0 ? (
@@ -1337,12 +1745,12 @@ export default function CallPage() {
                   You and {otherName} matched.
                 </p>
                 <p className="mt-1 text-xs text-[#A89A90]">
-                  Send a message below to keep the conversation going or plan a local coffee.
+                  Send a message below to keep the conversation going or suggest meeting at their favorite local spot.
                 </p>
               </div>
             ) : (
               chatMessages.map((msg) => {
-                const isMine = msg.sender_identity === meLower;
+                const isMine = msg.sender_identity === meIdLower;
                 return (
                   <div
                     key={msg.id}
@@ -1365,7 +1773,6 @@ export default function CallPage() {
           </div>
         </section>
 
-        {/* Message Composer */}
         <footer className="shrink-0 bg-[#141013] border-t border-[#F0E2CC]/15 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <form onSubmit={handleSendMessage} className="mx-auto max-w-xl flex gap-2">
             <input
@@ -1390,8 +1797,8 @@ export default function CallPage() {
     );
   }
 
-  // ---------------- 4. LIVE CALL VIEW (FIXED INSET-0 LOCKED FOR ANDROID CHROME) ----------------
-  const partnerLabel = partnerName || "Waiting for partner";
+  // ---------------- 4. LIVE CALL VIEW ----------------
+  const partnerLabel = partnerName || "Waiting for match";
   const hasTopBanner =
     connectionState === ConnectionState.Reconnecting ||
     isMuted ||
@@ -1405,8 +1812,8 @@ export default function CallPage() {
       : pipCorner === "top-left"
       ? `${hasTopBanner ? "top-16" : "top-3"} left-3`
       : pipCorner === "bottom-right"
-      ? `${sparkVisible ? "bottom-32" : "bottom-16"} right-3`
-      : `${sparkVisible ? "bottom-32" : "bottom-16"} left-3`;
+      ? `${sparkVisible ? "bottom-36" : "bottom-16"} right-3`
+      : `${sparkVisible ? "bottom-36" : "bottom-16"} left-3`;
 
   return (
     <div
@@ -1418,7 +1825,6 @@ export default function CallPage() {
     >
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
-      {/* PINNED TOP HEADER */}
       <header className="shrink-0 z-30 flex items-center justify-between gap-2 px-3 py-2.5 bg-[#141013]/95 border-b border-[#F0E2CC]/12">
         <div className="flex items-center gap-2.5 min-w-0">
           <div
@@ -1451,7 +1857,11 @@ export default function CallPage() {
               </span>
             </div>
             <p className="text-[11px] text-[#A89A90] truncate">
-              {videoUnlocked ? "Live video shared" : "Voice-first mode"}
+              {videoUnlocked
+                ? "Live video shared"
+                : partnerArea
+                ? `${partnerArea} (Voice-first)`
+                : "Voice-first mode"}
             </p>
           </div>
         </div>
@@ -1489,7 +1899,6 @@ export default function CallPage() {
         </div>
       </header>
 
-      {/* MAIN CALL STAGE */}
       <section
         ref={stageRef}
         className="relative flex-1 min-h-0 w-full overflow-hidden flex items-center justify-center bg-gradient-to-b from-[#171215] via-[#110D10] to-[#0B080A]"
@@ -1512,14 +1921,14 @@ export default function CallPage() {
               )}
             </div>
             <h2 className="mt-4 font-serif text-xl font-medium text-[#F8F1E7]">
-              {partnerName ? `Talking with ${partnerName}` : "Waiting in the room..."}
+              {partnerName ? `Talking with ${partnerName}` : "Connecting..."}
             </h2>
             <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-[#A89A90]">
               {partnerName
                 ? videoUnlocked
                   ? `${partnerName} has their camera hidden right now.`
                   : "Voice is live. Video unlocks only when both of you tap Request Video."
-                : `Share room code "${roomName}" on your second device to connect.`}
+                : "Waiting for your match to join the voice room."}
             </p>
           </div>
         )}
@@ -1570,7 +1979,7 @@ export default function CallPage() {
         {videoRequestedByPartner && !videoUnlocked && (
           <div
             className={`absolute inset-x-3 z-20 flex justify-center ${
-              sparkVisible ? "bottom-32" : "bottom-16"
+              sparkVisible ? "bottom-36" : "bottom-16"
             }`}
           >
             <div className="w-full max-w-sm rounded-2xl border border-[#E5C17B]/40 bg-[#181316]/95 backdrop-blur-md p-3.5 shadow-2xl">
@@ -1685,7 +2094,6 @@ export default function CallPage() {
         </div>
       </section>
 
-      {/* PINNED BOTTOM CONTROL DOCK */}
       <footer className="shrink-0 z-30 bg-[#141013] border-t border-[#F0E2CC]/15 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto max-w-xl flex flex-col gap-2">
           <div className="grid grid-cols-3 gap-2">

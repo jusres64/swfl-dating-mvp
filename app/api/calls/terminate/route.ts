@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedSession, isUuid } from "@/lib/authSession";
 import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
 
 export async function POST(request: Request) {
   try {
+    const session = await getAuthenticatedSession();
     const body = (await request.json()) as {
       roomName?: string;
       reporter?: string;
       reported?: string;
+      reportedId?: string;
       reason?: string;
       matchId?: string;
     };
 
-    const reporterId = normalizeIdentity(body.reporter || "");
-    const reportedId = normalizeIdentity(body.reported || "");
+    const reporterId = normalizeIdentity(session?.userId || body.reporter || "");
+    const reportedId = normalizeIdentity(body.reportedId || body.reported || "");
     const reason = (body.reason || "Safety concern").trim();
     const roomName = (body.roomName || "").trim();
 
@@ -75,6 +78,13 @@ export async function POST(request: Request) {
         },
         { onConflict: "identity" }
       );
+      if (isUuid(reportedId)) {
+        await supabase
+          .from("profiles")
+          .update({ cohort_status: "banned" })
+          .eq("id", reportedId);
+        await supabase.from("mvp_queue").delete().eq("user_id", reportedId);
+      }
       autoSuspended = true;
     }
 
