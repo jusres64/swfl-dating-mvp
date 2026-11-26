@@ -4,7 +4,11 @@ import { NextResponse } from "next/server";
 import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
 
 export const SESSION_COOKIE_NAME = "cd_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14;
+export const LOCATION_VALID_DAYS = 14;
+
+export const PROFILE_SELECT_FIELDS =
+  "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts, photo_urls, selfie_path, photo_verification_status, location_verified, location_verified_at, location_ip_flag";
 
 export interface AuthProfile {
   id: string;
@@ -26,6 +30,36 @@ export interface AuthProfile {
   occupation: string | null;
   height_inches: number | null;
   bio_prompts: Array<{ question?: string; answer?: string }> | null;
+  photo_urls: string[] | null;
+  selfie_path: string | null;
+  photo_verification_status: string | null;
+  location_verified: boolean | null;
+  location_verified_at: string | null;
+  location_ip_flag: string | null;
+}
+
+export function isLocationVerificationFresh(profile: {
+  location_verified?: boolean | null;
+  location_verified_at?: string | null;
+}): boolean {
+  if (!profile.location_verified || !profile.location_verified_at) return false;
+  const verifiedMs = new Date(profile.location_verified_at).getTime();
+  if (isNaN(verifiedMs)) return false;
+  const maxAgeMs = LOCATION_VALID_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() - verifiedMs <= maxAgeMs;
+}
+
+export function isVerificationGateComplete(profile: {
+  location_verified?: boolean | null;
+  location_verified_at?: string | null;
+  photo_urls?: string[] | null;
+  selfie_path?: string | null;
+  photo_verification_status?: string | null;
+}): boolean {
+  const locOk = isLocationVerificationFresh(profile);
+  const photosOk = Array.isArray(profile.photo_urls) && profile.photo_urls.length >= 1;
+  const selfieOk = Boolean(profile.selfie_path) && profile.photo_verification_status !== "rejected";
+  return locOk && photosOk && selfieOk;
 }
 
 function getSecret(): string {
@@ -110,9 +144,7 @@ export async function getAuthenticatedSession(): Promise<{
     const supabase = getSupabaseService();
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
-      )
+      .select(PROFILE_SELECT_FIELDS)
       .eq("id", verified.uid)
       .maybeSingle();
 

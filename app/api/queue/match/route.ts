@@ -1,6 +1,11 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
-import { getAuthenticatedSession, AuthProfile } from "@/lib/authSession";
+import {
+  getAuthenticatedSession,
+  isVerificationGateComplete,
+  AuthProfile,
+  PROFILE_SELECT_FIELDS,
+} from "@/lib/authSession";
 import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
 
 function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -63,10 +68,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: "idle" });
     }
 
+    if (!isVerificationGateComplete(me)) {
+      await supabase.from("mvp_queue").delete().eq("user_id", me.id);
+      return NextResponse.json(
+        {
+          error:
+            "Complete the Verification Gate (SWFL GPS, at least 1 Vault photo, and a live selfie) before joining tonight's queue.",
+          needsVerification: true,
+        },
+        { status: 403 }
+      );
+    }
+
     const nowIso = new Date().toISOString();
     const staleCutoff = new Date(Date.now() - 45 * 1000).toISOString();
 
-    // 1. Check if someone already matched with us
     const { data: myQueueRow } = await supabase
       .from("mvp_queue")
       .select("status, matched_with, room_name")
@@ -96,7 +112,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2. Heartbeat waiting presence
     await supabase.from("mvp_queue").upsert(
       {
         user_id: me.id,
@@ -110,14 +125,12 @@ export async function POST(request: Request) {
       { onConflict: "user_id" }
     );
 
-    // 3. Clean stale waiting rows
     await supabase
       .from("mvp_queue")
       .delete()
       .eq("status", "waiting")
       .lt("last_seen_at", staleCutoff);
 
-    // 4. Find waiting candidates of the opposite gender
     const targetGender = me.gender === "man" ? "woman" : "man";
     const { data: waitingRows } = await supabase
       .from("mvp_queue")
@@ -137,34 +150,38 @@ export async function POST(request: Request) {
       .gte("last_seen_at", staleCutoff);
 
     if (waitingIds.length === 0) {
+      const sameGenderNote =
+        allowRematch && (totalWaiting || 1) > 1
+          ? `Beta note: another user is in the queue, but their profile is also set to "${me.gender}".`
+          : null;
       return NextResponse.json({
         status: "waiting",
         waitingCount: totalWaiting || 1,
+        waitReason: sameGenderNote,
       });
     }
 
-    // 5. Fetch candidate profiles, blocks, suspensions, and recent history
     const { data: candidateProfiles } = await supabase
       .from("profiles")
-      .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
-      )
+      .select(PROFILE_SELECT_FIELDS)
       .in("id", waitingIds)
       .neq("cohort_status", "banned");
 
     const myIdentifiers = [me.id.toLowerCase(), normalizeIdentity(me.display_name)];
-    const { data: blockRows } = await supabase
-      .from("user_blocks")
-      .select("blocker_identity, blocked_identity")
-      .or(
-        `blocker_identity.in.(${myIdentifiers.join(",")}),blocked_identity.in.(${myIdentifiers.join(",")})`
-      );
+    const [{ data: blockedByMe }, { data: blockedMe }] = await Promise.all([
+      supabase
+        .from("user_blocks")
+        .select("blocked_identity")
+        .in("blocker_identity", myIdentifiers),
+      supabase
+        .from("user_blocks")
+        .select("blocker_identity")
+        .in("blocked_identity", myIdentifiers),
+    ]);
 
     const blockedSet = new Set<string>();
-    for (const b of blockRows || []) {
-      blockedSet.add(b.blocker_identity.toLowerCase());
-      blockedSet.add(b.blocked_identity.toLowerCase());
-    }
+    for (const row of blockedByMe || []) blockedSet.add(row.blocked_identity.toLowerCase());
+    for (const row of blockedMe || []) blockedSet.add(row.blocker_identity.toLowerCase());
     myIdentifiers.forEach((id) => blockedSet.delete(id));
 
     const { data: suspendedRows } = await supabase
@@ -184,7 +201,6 @@ export async function POST(request: Request) {
       recentPartnerIds.add(h.user_a === me.id ? h.user_b : h.user_a);
     }
 
-    // 6. Filter by age, SWFL drive distance, overlapping intentions, and zero blocks
     const currentYear = new Date().getFullYear();
     const myAge = currentYear - me.birth_year;
     const profilesById = new Map<string, AuthProfile>();
@@ -194,26 +210,45 @@ export async function POST(request: Request) {
 
     const compatibleFresh: AuthProfile[] = [];
     const compatibleRecent: AuthProfile[] = [];
+    const skipReasons: string[] = [];
 
     for (const cid of waitingIds) {
       const cand = profilesById.get(cid);
-      if (!cand) continue;
+      if (!cand) {
+        skipReasons.push("Waiting partner account is banned or missing a profile.");
+        continue;
+      }
+
+      if (!isVerificationGateComplete(cand)) {
+        skipReasons.push("Waiting partner has not completed verification yet.");
+        continue;
+      }
 
       const candKeys = [cand.id.toLowerCase(), normalizeIdentity(cand.display_name)];
-      if (candKeys.some((k) => blockedSet.has(k) || suspendedSet.has(k))) {
+      if (candKeys.some((k) => blockedSet.has(k))) {
+        skipReasons.push("Skipped due to an existing Safety block between these accounts.");
+        continue;
+      }
+      if (candKeys.some((k) => suspendedSet.has(k))) {
+        skipReasons.push("Skipped because the waiting partner account is suspended.");
         continue;
       }
 
       const candAge = currentYear - cand.birth_year;
-      const ageCompatible =
-        candAge >= me.min_age_pref &&
-        candAge <= me.max_age_pref &&
-        myAge >= cand.min_age_pref &&
-        myAge <= cand.max_age_pref;
+      const candInMyRange = candAge >= me.min_age_pref && candAge <= me.max_age_pref;
+      const meInCandRange = myAge >= cand.min_age_pref && myAge <= cand.max_age_pref;
 
-      if (!ageCompatible) continue;
+      if (!candInMyRange || !meInCandRange) {
+        skipReasons.push(
+          `Age range mismatch: you are ${myAge} (seeking ${me.min_age_pref}-${me.max_age_pref}), waiting partner is ${candAge} (seeking ${cand.min_age_pref}-${cand.max_age_pref}).`
+        );
+        continue;
+      }
 
-      if (!hasIntentOverlap(me, cand)) continue;
+      if (!hasIntentOverlap(me, cand)) {
+        skipReasons.push("No overlapping relationship intention between the two accounts.");
+        continue;
+      }
 
       const miles = distanceMiles(
         me.approx_lat,
@@ -222,10 +257,19 @@ export async function POST(request: Request) {
         cand.approx_lng
       );
       const maxAllowedMiles = Math.min(me.max_drive_miles || 45, cand.max_drive_miles || 45);
-      if (miles > maxAllowedMiles) continue;
+      if (miles > maxAllowedMiles) {
+        skipReasons.push(
+          `Distance mismatch: ${Math.round(miles)} mi apart exceeds the ${maxAllowedMiles} mi limit.`
+        );
+        continue;
+      }
 
       if (recentPartnerIds.has(cand.id)) {
-        if (allowRematch) compatibleRecent.push(cand);
+        if (allowRematch) {
+          compatibleRecent.push(cand);
+        } else {
+          skipReasons.push("Already paired recently (enable Beta test mode to re-match).");
+        }
       } else {
         compatibleFresh.push(cand);
       }
@@ -236,10 +280,10 @@ export async function POST(request: Request) {
       return NextResponse.json({
         status: "waiting",
         waitingCount: totalWaiting || 1,
+        waitReason: allowRematch && skipReasons.length > 0 ? `Beta note: ${skipReasons[0]}` : null,
       });
     }
 
-    // 7. Atomically claim the selected partner
     const roomName = `drop-${crypto.randomUUID().slice(0, 8)}`;
     const { data: claimed } = await supabase
       .from("mvp_queue")
@@ -257,6 +301,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         status: "waiting",
         waitingCount: totalWaiting || 1,
+        waitReason: null,
       });
     }
 

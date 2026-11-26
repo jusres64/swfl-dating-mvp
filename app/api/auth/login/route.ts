@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseService, normalizeIdentity } from "@/lib/supabaseService";
-import { attachSessionCookie } from "@/lib/authSession";
+import { attachSessionCookie, PROFILE_SELECT_FIELDS } from "@/lib/authSession";
+import { isAdminEmail } from "@/lib/adminAuth";
 
 export async function POST(request: Request) {
   try {
@@ -30,9 +31,7 @@ export async function POST(request: Request) {
 
     const { data: profile, error: profileErr } = await supabase
       .from("profiles")
-      .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
-      )
+      .select(PROFILE_SELECT_FIELDS)
       .eq("id", authData.user.id)
       .maybeSingle();
 
@@ -55,7 +54,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const res = NextResponse.json({ ok: true, profile });
+    const res = NextResponse.json({
+      ok: true,
+      isAdmin: isAdminEmail(email),
+      profile,
+    });
     attachSessionCookie(res, authData.user.id, email);
     return res;
   } catch (err) {

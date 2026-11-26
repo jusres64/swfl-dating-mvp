@@ -35,22 +35,22 @@ function formatIntents(intents: string[] | null, fallbackIntent: string | null):
 
 function formatKids(wantsKids: string | null, partnerPref: string | null): string {
   const mineLabels: Record<string, string> = {
-    have_open_to_more: "Have kids, open to more",
-    have_and_done: "Have kids, done",
-    no_want: "No kids, want them",
-    no_open: "No kids, open",
-    no_none: "No kids, do not want",
-    yes: "Want kids",
+    have_open_to_more: "Has kids · Open to more",
+    have_and_done: "Has kids · Done having kids",
+    no_want: "No kids · Wants kids",
+    no_open: "No kids · Open to kids",
+    no_none: "No kids · Does not want kids",
+    yes: "Wants kids",
     open: "Open to kids",
-    no: "Do not want kids",
+    no: "Does not want kids",
   };
   const prefLabels: Record<string, string> = {
     open_to_kids: "Open to partner with kids",
-    prefer_no_kids: "Prefer partner without kids",
+    prefer_no_kids: "Prefers partner without kids",
   };
   const mine = wantsKids ? mineLabels[wantsKids] || wantsKids : "Not listed";
   const pref = partnerPref ? prefLabels[partnerPref] : "";
-  return pref ? `${mine} (${pref})` : mine;
+  return pref ? `${mine} · ${pref}` : mine;
 }
 
 export async function GET(request: Request) {
@@ -93,7 +93,7 @@ export async function GET(request: Request) {
         const { data: p } = await supabase
           .from("profiles")
           .select(
-            "display_name, birth_year, area_label, occupation, height_inches, smoking, intent, intents, wants_kids, partner_kids_pref, bio_prompts"
+            "display_name, birth_year, area_label, occupation, height_inches, smoking, intent, intents, wants_kids, partner_kids_pref, bio_prompts, photo_urls, photo_verification_status, location_verified"
           )
           .eq("id", otherId)
           .maybeSingle();
@@ -102,6 +102,17 @@ export async function GET(request: Request) {
           const prompts = Array.isArray(p.bio_prompts)
             ? (p.bio_prompts as Array<{ answer?: string }>)
             : [];
+          const rawPhotoPaths = Array.isArray(p.photo_urls) ? p.photo_urls : [];
+          const signedPhotos: string[] = [];
+          for (const path of rawPhotoPaths) {
+            const { data: signed } = await supabase.storage
+              .from("vault-media")
+              .createSignedUrl(path, 3600);
+            if (signed?.signedUrl) {
+              signedPhotos.push(signed.signedUrl);
+            }
+          }
+
           const currentYear = new Date().getFullYear();
           partnerProfile = {
             displayName: p.display_name,
@@ -113,6 +124,9 @@ export async function GET(request: Request) {
             intent: formatIntents(p.intents, p.intent),
             kids: formatKids(p.wants_kids, p.partner_kids_pref),
             firstMeetSpot: prompts[0]?.answer || "Ask in chat",
+            photoUrls: signedPhotos,
+            photoVerified: p.photo_verification_status === "verified",
+            locationVerified: Boolean(p.location_verified),
           };
         }
       }

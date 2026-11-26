@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAuthenticatedSession } from "@/lib/authSession";
+import { getAuthenticatedSession, PROFILE_SELECT_FIELDS } from "@/lib/authSession";
 import { getSupabaseService } from "@/lib/supabaseService";
 
 const SWFL_AREAS: Record<string, { lat: number; lng: number }> = {
@@ -135,9 +135,7 @@ export async function PATCH(request: Request) {
         bio_prompts: [{ question: "Favorite first-meet spot", answer: cleanSpot }],
       })
       .eq("id", session.userId)
-      .select(
-        "id, gender, cohort_status, display_name, birth_year, area_label, approx_lat, approx_lng, intent, intents, min_age_pref, max_age_pref, max_drive_miles, wants_kids, partner_kids_pref, smoking, occupation, height_inches, bio_prompts"
-      )
+      .select(PROFILE_SELECT_FIELDS)
       .single();
 
     if (error || !updated) {

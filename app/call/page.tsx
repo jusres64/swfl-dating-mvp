@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import EditPreferencesView from "./EditPreferencesView";
+import VerificationGateView, { VerificationProfile } from "./VerificationGateView";
 import {
   ConnectionQuality,
   ConnectionState,
@@ -22,7 +23,7 @@ type WakeLockSentinelLike = {
   release: () => Promise<void>;
 };
 
-type ViewMode = "greenroom" | "preferences" | "call" | "post-call" | "chat";
+type ViewMode = "greenroom" | "preferences" | "verify" | "call" | "post-call" | "chat";
 type PipCorner = "top-right" | "top-left" | "bottom-right" | "bottom-left";
 
 type SignalMessage =
@@ -31,25 +32,7 @@ type SignalMessage =
   | { type: "video_decline" }
   | { type: "spark_index"; index: number };
 
-type UserProfile = {
-  id: string;
-  gender: "man" | "woman";
-  cohort_status: string;
-  display_name: string;
-  birth_year: number;
-  area_label: string;
-  intent: string;
-  kids?: string;
-  min_age_pref: number;
-  max_age_pref: number;
-  max_drive_miles: number;
-  smoking: string | null;
-  occupation: string | null;
-  intents?: string[] | null;
-  wants_kids?: string | null;
-  partner_kids_pref?: string | null;
-  bio_prompts?: Array<{ question?: string; answer?: string }> | null;
-};
+type UserProfile = VerificationProfile;
 
 type MatchRecord = {
   id: string;
@@ -72,6 +55,9 @@ type PartnerVaultProfile = {
   intent: string;
   kids?: string;
   firstMeetSpot: string;
+  photoUrls?: string[];
+  photoVerified?: boolean;
+  locationVerified?: boolean;
 };
 
 type ChatMessage = {
@@ -133,10 +119,18 @@ function formatDuration(totalSeconds: number): string {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
+function isLocationFresh(p: UserProfile | null): boolean {
+  if (!p?.location_verified || !p?.location_verified_at) return false;
+  const ms = new Date(p.location_verified_at).getTime();
+  if (isNaN(ms)) return false;
+  return Date.now() - ms <= 14 * 24 * 60 * 60 * 1000;
+}
+
 export default function CallPage() {
   // Auth state
   const [authChecking, setAuthChecking] = useState(true);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
@@ -147,6 +141,7 @@ export default function CallPage() {
   const [inQueue, setInQueue] = useState(false);
   const [queueWaitSeconds, setQueueWaitSeconds] = useState(0);
   const [waitingCount, setWaitingCount] = useState(1);
+  const [waitReason, setWaitReason] = useState<string | null>(null);
   const [allowRematch, setAllowRematch] = useState(true);
   const [showManualRoom, setShowManualRoom] = useState(false);
   const [manualRoomCode, setManualRoomCode] = useState("coastal-dusk-test");
@@ -204,6 +199,7 @@ export default function CallPage() {
   const [myMatches, setMyMatches] = useState<MatchRecord[]>([]);
   const [activeMatch, setActiveMatch] = useState<MatchRecord | null>(null);
   const [partnerVault, setPartnerVault] = useState<PartnerVaultProfile | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [sendingChat, setSendingChat] = useState(false);
@@ -266,13 +262,13 @@ export default function CallPage() {
     }
   }, []);
 
-  // Load authenticated user session on mount
   const refreshSession = useCallback(async () => {
     setAuthChecking(true);
     try {
       const res = await fetch("/api/auth/me", { cache: "no-store" });
       const data = (await res.json()) as {
         authenticated?: boolean;
+        isAdmin?: boolean;
         suspended?: boolean;
         profile?: UserProfile | null;
       };
@@ -282,6 +278,7 @@ export default function CallPage() {
           setLoginError("This account has been suspended pending safety review.");
         } else {
           setUserProfile(data.profile);
+          setIsAdmin(Boolean(data.isAdmin));
         }
       } else {
         setUserProfile(null);
@@ -299,7 +296,8 @@ export default function CallPage() {
 
   const loadMyMatches = useCallback(async () => {
     if (!userProfile) {
-      setMyMatches([]);
+      setIsAdmin(false);
+    setMyMatches([]);
       return;
     }
     try {
@@ -318,7 +316,6 @@ export default function CallPage() {
     }
   }, [viewMode, userProfile, loadMyMatches]);
 
-  // Sign in handler
   const handleInlineLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
@@ -331,7 +328,7 @@ export default function CallPage() {
       });
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
-        profile?: UserProfile;
+        isAdmin?: boolean; profile?: UserProfile;
       };
       if (!res.ok) {
         setLoginError(data.error || "Sign in failed.");
@@ -339,6 +336,7 @@ export default function CallPage() {
       }
       if (data.profile) {
         setUserProfile(data.profile);
+          setIsAdmin(Boolean(data.isAdmin));
         setLoginPassword("");
       } else {
         await refreshSession();
@@ -354,11 +352,11 @@ export default function CallPage() {
     setInQueue(false);
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     setUserProfile(null);
+    setIsAdmin(false);
     setMyMatches([]);
     setEndedNotice(null);
   };
 
-  // Wake Lock during live call
   const requestWakeLock = useCallback(async () => {
     if (typeof navigator === "undefined") return;
     const navWithWakeLock = navigator as Navigator & {
@@ -398,7 +396,6 @@ export default function CallPage() {
     };
   }, [viewMode, requestWakeLock, releaseWakeLock]);
 
-  // Timers
   useEffect(() => {
     if (viewMode !== "call") {
       setElapsedSeconds(0);
@@ -421,7 +418,6 @@ export default function CallPage() {
     return () => clearInterval(interval);
   }, [inQueue]);
 
-  // Stop local preview cleanly before enabling live camera
   const stopPreviewTrack = useCallback(() => {
     if (previewTrackRef.current) {
       previewTrackRef.current.stop();
@@ -451,7 +447,6 @@ export default function CallPage() {
     }
   }, [stopPreviewTrack, showToast]);
 
-  // Attach remote & local video
   useEffect(() => {
     const videoEl = remoteVideoRef.current;
     if (!videoEl || !partnerVideoTrack) return;
@@ -471,7 +466,6 @@ export default function CallPage() {
     };
   }, [activeLocalVideoTrack, localCameraHidden]);
 
-  // Darkness check
   useEffect(() => {
     if (!activeLocalVideoTrack || localCameraHidden) {
       setIsLightingDark(false);
@@ -507,7 +501,6 @@ export default function CallPage() {
     };
   }, [activeLocalVideoTrack, localCameraHidden]);
 
-  // Draggable PiP handlers
   const handlePipPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const stageEl = stageRef.current;
     const pipEl = pipRef.current;
@@ -646,7 +639,6 @@ export default function CallPage() {
     return { token, serverUrl };
   };
 
-  // Connect into a LiveKit room (called either automatically from Queue or from Manual Test Room)
   const connectToLiveKitRoom = useCallback(
     async (
       targetRoomName: string,
@@ -822,10 +814,11 @@ export default function CallPage() {
     [userProfile, syncRemoteParticipant, sendSignal, showToast, unlockLiveVideo]
   );
 
-  // Automated Sunday Drop Queue polling
+  // Automated Sunday Drop Queue
   const handleEnterQueue = async () => {
     setRoomError(null);
     setEndedNotice(null);
+    setWaitReason(null);
     setInQueue(true);
     triggerHaptic(15);
 
@@ -838,16 +831,23 @@ export default function CallPage() {
       const data = (await res.json()) as {
         status?: "waiting" | "matched";
         waitingCount?: number;
+        waitReason?: string | null;
         roomName?: string;
         partner?: { id: string; displayName: string; areaLabel: string };
         error?: string;
+        needsVerification?: boolean;
       };
       if (!res.ok) {
-        setRoomError(data.error || "Could not enter queue.");
         setInQueue(false);
+        if (data.needsVerification) {
+          setViewMode("verify");
+          return;
+        }
+        setRoomError(data.error || "Could not enter queue.");
         return;
       }
       if (data.waitingCount) setWaitingCount(data.waitingCount);
+      setWaitReason(data.waitReason || null);
       if (data.status === "matched" && data.roomName && data.partner) {
         await connectToLiveKitRoom(data.roomName, data.partner);
       }
@@ -859,6 +859,7 @@ export default function CallPage() {
 
   const handleLeaveQueue = async () => {
     setInQueue(false);
+    setWaitReason(null);
     await fetch("/api/queue/match", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -880,16 +881,23 @@ export default function CallPage() {
         const data = (await res.json()) as {
           status?: "waiting" | "matched";
           waitingCount?: number;
+          waitReason?: string | null;
           roomName?: string;
           partner?: { id: string; displayName: string; areaLabel: string };
           error?: string;
+          needsVerification?: boolean;
         };
         if (!res.ok) {
-          setRoomError(data.error || "Queue disconnected.");
           setInQueue(false);
+          if (data.needsVerification) {
+            setViewMode("verify");
+            return;
+          }
+          setRoomError(data.error || "Queue disconnected.");
           return;
         }
         if (data.waitingCount) setWaitingCount(data.waitingCount);
+        setWaitReason(data.waitReason || null);
         if (data.status === "matched" && data.roomName && data.partner) {
           await connectToLiveKitRoom(data.roomName, data.partner);
         }
@@ -902,7 +910,6 @@ export default function CallPage() {
     return () => clearInterval(interval);
   }, [inQueue, viewMode, allowRematch, connectToLiveKitRoom]);
 
-  // Leave call
   const handleLeaveCall = useCallback(
     async (options?: { skipPostCall?: boolean; notice?: string }) => {
       triggerHaptic(30);
@@ -957,7 +964,6 @@ export default function CallPage() {
     [partnerId, partnerName, releaseWakeLock, stopPreviewTrack]
   );
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopPreviewTrack();
@@ -968,7 +974,6 @@ export default function CallPage() {
     };
   }, [releaseWakeLock, stopPreviewTrack]);
 
-  // Post-call decision
   const handlePostCallDecision = async (decision: "like" | "pass") => {
     if (!postCallPartnerName || !userProfile) return;
     setDecisionBusy(true);
@@ -1018,7 +1023,6 @@ export default function CallPage() {
     }
   };
 
-  // Poll for mutual match
   useEffect(() => {
     if (viewMode !== "post-call" || !waitingForMutual || !postCallPartnerId || !userProfile) return;
 
@@ -1056,7 +1060,6 @@ export default function CallPage() {
     return () => clearInterval(interval);
   }, [viewMode, waitingForMutual, postCallPartnerId, postCallRoom, userProfile]);
 
-  // Poll messages & unlocked Private Vault inside Chat
   const fetchChatMessages = useCallback(async (matchId: string) => {
     try {
       const res = await fetch(`/api/messages?matchId=${encodeURIComponent(matchId)}`);
@@ -1084,6 +1087,7 @@ export default function CallPage() {
   useEffect(() => {
     if (viewMode !== "chat" || !activeMatch) return;
     setPartnerVault(null);
+    setLightboxUrl(null);
     fetchChatMessages(activeMatch.id);
     const interval = setInterval(() => {
       fetchChatMessages(activeMatch.id);
@@ -1128,7 +1132,6 @@ export default function CallPage() {
     }
   };
 
-  // Report & Block
   const getReportTarget = (): { id: string | null; name: string | null } => {
     if (viewMode === "call") {
       return {
@@ -1188,7 +1191,6 @@ export default function CallPage() {
     }
   };
 
-  // Live call media handlers
   const handleToggleMute = async () => {
     const room = roomRef.current;
     if (!room) return;
@@ -1431,9 +1433,22 @@ export default function CallPage() {
         profile={userProfile}
         onBack={() => setViewMode("greenroom")}
         onSaved={(updated) => {
-          setUserProfile(updated);
+          setUserProfile((prev) => (prev ? { ...prev, ...updated } : updated));
           setEndedNotice("Preferences updated. Your new match settings are live.");
           setViewMode("greenroom");
+        }}
+      />
+    );
+  }
+
+  // ---------------- 0.6. VERIFICATION GATE VIEW ----------------
+  if (viewMode === "verify") {
+    return (
+      <VerificationGateView
+        profile={userProfile}
+        onBack={() => setViewMode("greenroom")}
+        onProfileUpdated={(updated) => {
+          setUserProfile((prev) => (prev ? { ...prev, ...updated } : updated));
         }}
       />
     );
@@ -1442,6 +1457,13 @@ export default function CallPage() {
   // ---------------- 1. SUNDAY DROP GREEN ROOM ----------------
   if (viewMode === "greenroom") {
     const meIdLower = userProfile.id.toLowerCase();
+    const locOk = isLocationFresh(userProfile);
+    const photosCount = Array.isArray(userProfile.photo_urls) ? userProfile.photo_urls.length : 0;
+    const photosOk = photosCount >= 1;
+    const selfieOk =
+      Boolean(userProfile.selfie_path) && userProfile.photo_verification_status !== "rejected";
+    const gateComplete = locOk && photosOk && selfieOk;
+
     return (
       <main className="min-h-[100dvh] bg-[#0E0B0D] text-[#F5EDE2] flex items-center justify-center p-4">
         <div className="w-full max-w-md space-y-4">
@@ -1449,13 +1471,23 @@ export default function CallPage() {
             <span className="text-xs font-medium text-[#E5C17B]">
               Signed in as {userProfile.display_name}
             </span>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="text-xs text-[#A89A90] hover:text-[#F5EDE2] underline"
-            >
-              Sign out
-            </button>
+            <div className="flex items-center gap-3">
+              {isAdmin && (
+                <Link
+                  href="/admin"
+                  className="rounded-lg border border-[#E5C17B]/40 bg-[#251E18] px-2.5 py-1 text-[11px] font-semibold text-[#E5C17B] hover:bg-[#31271F]"
+                >
+                  Admin
+                </Link>
+              )}
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="text-xs text-[#A89A90] hover:text-[#F5EDE2] underline"
+              >
+                Sign out
+              </button>
+            </div>
           </div>
 
           <div className="rounded-3xl border border-[#F0E2CC]/15 bg-[#171215] p-6 shadow-2xl space-y-5">
@@ -1469,7 +1501,7 @@ export default function CallPage() {
               <p className="mt-1.5 text-xs text-[#B3A499] leading-relaxed">
                 {inQueue
                   ? `Looking for a compatible SWFL match within ${userProfile.max_drive_miles} miles (ages ${userProfile.min_age_pref} to ${userProfile.max_age_pref}). Your call starts voice-first automatically.`
-                  : "Tap below to enter the live matchmaking queue. We pair you automatically by age range, SWFL drive distance, and safety filters."}
+                  : "Complete your quick verification once, then enter the live matchmaking queue."}
               </p>
             </div>
 
@@ -1484,6 +1516,61 @@ export default function CallPage() {
                 {roomError}
               </div>
             )}
+
+            {/* Verification Gate Summary Card */}
+            <div
+              className={`rounded-2xl border p-3.5 space-y-2.5 ${
+                gateComplete
+                  ? "border-[#7A9E7E]/35 bg-[#141B16]"
+                  : "border-[#E5C17B]/35 bg-[#201914]"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-[#F8F1E7]">
+                  {gateComplete ? "Verification Gate Cleared" : "Verification Gate Required"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("verify")}
+                  className="text-xs font-semibold text-[#E5C17B] underline hover:text-[#F2D7A4]"
+                >
+                  {gateComplete ? "Manage Photos" : "Verify Now"}
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                <span
+                  className={`rounded-full px-2.5 py-0.5 ${
+                    locOk
+                      ? "bg-[#7A9E7E]/20 text-[#A7CCA9]"
+                      : "bg-[#2C221A] text-[#E5C17B]"
+                  }`}
+                >
+                  {locOk ? "SWFL Local OK" : "SWFL GPS Needed"}
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 ${
+                    photosOk
+                      ? "bg-[#7A9E7E]/20 text-[#A7CCA9]"
+                      : "bg-[#2C221A] text-[#E5C17B]"
+                  }`}
+                >
+                  {photosOk ? `Vault Photos (${photosCount}/3)` : "Add Vault Photo"}
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 ${
+                    selfieOk
+                      ? "bg-[#7A9E7E]/20 text-[#A7CCA9]"
+                      : "bg-[#2C221A] text-[#E5C17B]"
+                  }`}
+                >
+                  {userProfile.photo_verification_status === "verified"
+                    ? "Photo Verified"
+                    : selfieOk
+                    ? "Selfie Submitted"
+                    : "Live Selfie Needed"}
+                </span>
+              </div>
+            </div>
 
             {/* Profile matching summary */}
             <div className="space-y-2">
@@ -1510,14 +1597,24 @@ export default function CallPage() {
 
             {!inQueue ? (
               <div className="space-y-3">
-                <button
-                  type="button"
-                  disabled={joining}
-                  onClick={handleEnterQueue}
-                  className="w-full min-h-[50px] rounded-2xl bg-[#E5C17B] px-5 text-base font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
-                >
-                  {joining ? "Connecting to Call..." : "Enter Tonight's Queue"}
-                </button>
+                {gateComplete ? (
+                  <button
+                    type="button"
+                    disabled={joining}
+                    onClick={handleEnterQueue}
+                    className="w-full min-h-[50px] rounded-2xl bg-[#E5C17B] px-5 text-base font-semibold text-[#1A1310] transition hover:bg-[#EED093] disabled:opacity-60"
+                  >
+                    {joining ? "Connecting to Call..." : "Enter Tonight's Queue"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("verify")}
+                    className="w-full min-h-[50px] rounded-2xl bg-[#D96B52] px-5 text-base font-semibold text-[#F5F0EB] transition hover:bg-[#c85e46]"
+                  >
+                    Complete Verification to Join Queue
+                  </button>
+                )}
 
                 <label className="flex items-center gap-2.5 rounded-xl border border-[#F0E2CC]/10 bg-[#110D10] px-3.5 py-2.5 text-xs text-[#C9BCB0] cursor-pointer">
                   <input
@@ -1569,6 +1666,11 @@ export default function CallPage() {
                   <p className="text-xs text-[#C9BCB0]">
                     {waitingCount} {waitingCount === 1 ? "person" : "people"} currently in queue
                   </p>
+                  {waitReason && (
+                    <p className="mt-2 rounded-lg border border-[#E5C17B]/25 bg-[#171215] px-3 py-2 text-[11px] text-[#F0D9AE] leading-snug">
+                      {waitReason}
+                    </p>
+                  )}
                 </div>
 
                 <button
@@ -1631,8 +1733,8 @@ export default function CallPage() {
 
           <p className="mt-2 text-sm text-[#B3A499]">
             {waitingForMutual
-              ? `Waiting to see if ${postCallPartnerName} wants to match too. If it is mutual, private messaging and their Vault details will unlock right away.`
-              : "If you both say yes, you will unlock private messages and see each other's Private Vault details."}
+              ? `Waiting to see if ${postCallPartnerName} wants to match too. If it is mutual, private messaging and their Vault photos will unlock right away.`
+              : "If you both say yes, you will unlock private messages, Vault photos, and profile details."}
           </p>
 
           {!waitingForMutual && myDecision === "none" ? (
@@ -1694,6 +1796,8 @@ export default function CallPage() {
     const meIdLower = userProfile.id.toLowerCase();
     const otherName =
       activeMatch.user_a === meIdLower ? activeMatch.user_b_display : activeMatch.user_a_display;
+    const partnerPhotos = partnerVault?.photoUrls || [];
+    const avatarUrl = partnerPhotos[0] || null;
 
     return (
       <div className="fixed inset-0 flex flex-col bg-[#0F0C0E] text-[#F5EDE2] overflow-hidden">
@@ -1709,10 +1813,30 @@ export default function CallPage() {
             >
               Back
             </button>
+
+            {avatarUrl && (
+              <button
+                type="button"
+                onClick={() => setLightboxUrl(avatarUrl)}
+                className="shrink-0 h-10 w-10 overflow-hidden rounded-full border border-[#E5C17B]/50"
+                aria-label={`View ${otherName}'s photo`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={avatarUrl} alt={otherName} className="h-full w-full object-cover" />
+              </button>
+            )}
+
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#E5C17B]">
-                Mutual Match
-              </p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#E5C17B]">
+                  Mutual Match
+                </p>
+                {partnerVault?.photoVerified && (
+                  <span className="rounded-full bg-[#7A9E7E]/20 px-1.5 py-0.5 text-[9px] font-semibold text-[#9AC19E]">
+                    Photo Verified
+                  </span>
+                )}
+              </div>
               <h2 className="truncate font-serif text-base font-medium text-[#F8F1E7]">
                 {otherName}
                 {partnerVault?.age ? `, ${partnerVault.age}` : ""}
@@ -1734,46 +1858,68 @@ export default function CallPage() {
               className="min-h-[44px] px-3 rounded-xl bg-[#2A161A] border border-[#6E3943] text-[#EBB8BF] text-xs font-semibold hover:bg-[#3A1E24] flex items-center gap-1"
             >
               <ShieldIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">Safety</span>
+              <span>Safety</span>
             </button>
           </div>
         </header>
 
-        {/* Unlocked Private Vault Profile Card */}
+        {/* Unlocked Private Vault Profile & Photo Strip */}
         {showMatchProfileCard && (
-          <div className="shrink-0 bg-[#181316] border-b border-[#F0E2CC]/15 px-4 py-3">
+          <div className="shrink-0 max-h-[52dvh] overflow-y-auto bg-[#181316] border-b border-[#F0E2CC]/15 px-4 py-3">
             {partnerVault ? (
-              <div className="mx-auto max-w-xl grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Area &amp; Height</p>
-                  <p className="mt-0.5 text-[#F5EDE2]">
-                    {partnerVault.areaLabel} ({partnerVault.height})
-                  </p>
-                </div>
-                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Occupation</p>
-                  <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.occupation}</p>
-                </div>
-                <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Intent &amp; Smoking</p>
-                  <p className="mt-0.5 text-[#F5EDE2]">
-                    {partnerVault.intent} / {partnerVault.smoking}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-[#E5C17B]/25 bg-[#241D17] p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-[#E5C17B]">Favorite First-Meet Spot</p>
-                  <p className="mt-0.5 text-[#F8F1E7]">{partnerVault.firstMeetSpot}</p>
-                </div>
-                {partnerVault.kids && (
-                  <div className="col-span-2 rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
-                    <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Kids</p>
-                    <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.kids}</p>
+              <div className="mx-auto max-w-xl space-y-2.5">
+                {partnerPhotos.length > 0 && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {partnerPhotos.map((url, idx) => (
+                      <button
+                        key={url}
+                        type="button"
+                        onClick={() => setLightboxUrl(url)}
+                        className="relative aspect-[3/4] overflow-hidden rounded-xl border border-[#E5C17B]/30 bg-black"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={url}
+                          alt={`${otherName} photo ${idx + 1}`}
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                    ))}
                   </div>
                 )}
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Area &amp; Height</p>
+                    <p className="mt-0.5 text-[#F5EDE2]">
+                      {partnerVault.areaLabel} ({partnerVault.height})
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Occupation</p>
+                    <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.occupation}</p>
+                  </div>
+                  <div className="rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Intent &amp; Smoking</p>
+                    <p className="mt-0.5 text-[#F5EDE2]">
+                      {partnerVault.intent} / {partnerVault.smoking}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-[#E5C17B]/25 bg-[#241D17] p-2.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[#E5C17B]">Favorite First-Meet Spot</p>
+                    <p className="mt-0.5 text-[#F8F1E7]">{partnerVault.firstMeetSpot}</p>
+                  </div>
+                  {partnerVault.kids && (
+                    <div className="col-span-2 rounded-xl border border-[#F0E2CC]/12 bg-[#1F181C] p-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-[#A89A90]">Kids</p>
+                      <p className="mt-0.5 text-[#F5EDE2]">{partnerVault.kids}</p>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="mx-auto max-w-xl text-xs text-[#A89A90]">
-                Southwest Florida mutual match
+                Loading unlocked Match Vault...
               </div>
             )}
           </div>
@@ -1827,12 +1973,36 @@ export default function CallPage() {
             <button
               type="submit"
               disabled={sendingChat || !chatInput.trim()}
-              className="min-h-[46px] px-5 rounded-xl bg-[#E5C17B] text-sm font-semibold text-[#1A1310] hover:bg-[#EED093] disabled:opacity-50"
+              className="min-h-[46px] px-5 rounded-xl bg-[#E5C17B] text-sm font-semibold text-[#1A1310] hover:bg-[#EED093] disabled:opacity-45"
             >
               Send
             </button>
           </form>
         </footer>
+
+        {/* Full-screen Vault Photo Lightbox */}
+        {lightboxUrl && (
+          <div
+            onClick={() => setLightboxUrl(null)}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxUrl(null)}
+              className="absolute top-4 right-4 min-h-[44px] min-w-[44px] rounded-full bg-[#1F191C] text-[#F5EDE2] flex items-center justify-center"
+              aria-label="Close photo"
+            >
+              <CloseIcon className="w-5 h-5" />
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightboxUrl}
+              alt="Enlarged match photo"
+              className="max-h-[85dvh] max-w-full rounded-2xl object-contain"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
 
         {safetySheetModal}
       </div>
@@ -1975,7 +2145,6 @@ export default function CallPage() {
           </div>
         )}
 
-        {/* TOP STATUS BANNERS */}
         <div className="pointer-events-none absolute top-3 inset-x-3 z-20 flex flex-col items-center gap-2">
           {connectionState === ConnectionState.Reconnecting && (
             <div className="rounded-full border border-[#E5C17B]/45 bg-[#2A2118]/95 backdrop-blur-md px-4 py-1.5 text-xs font-medium text-[#F3DBAC] shadow">
@@ -2017,7 +2186,6 @@ export default function CallPage() {
           )}
         </div>
 
-        {/* INCOMING VIDEO CONSENT PROMPT */}
         {videoRequestedByPartner && !videoUnlocked && (
           <div
             className={`absolute inset-x-3 z-20 flex justify-center ${
@@ -2051,7 +2219,6 @@ export default function CallPage() {
           </div>
         )}
 
-        {/* DRAGGABLE SELF-VIEW TILE */}
         {activeLocalVideoTrack && !localCameraHidden && (
           <div
             ref={pipRef}
@@ -2089,7 +2256,6 @@ export default function CallPage() {
           </div>
         )}
 
-        {/* ORIGINAL 3-SECOND SPARK CARD */}
         <div className="absolute bottom-2.5 inset-x-3 z-20 flex justify-center">
           {sparkVisible ? (
             <div className="w-full max-w-lg rounded-2xl border border-[#F0E2CC]/20 bg-[#141013]/92 backdrop-blur-md px-4 py-3 shadow-xl">
@@ -2270,7 +2436,7 @@ function SunIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l1.41 1.41" />
     </svg>
   );
 }
