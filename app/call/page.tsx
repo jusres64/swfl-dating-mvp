@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import EditPreferencesModal from "@/components/EditPreferencesModal";
+import EditPreferencesView from "./EditPreferencesView";
 import {
   ConnectionQuality,
   ConnectionState,
@@ -22,7 +22,7 @@ type WakeLockSentinelLike = {
   release: () => Promise<void>;
 };
 
-type ViewMode = "greenroom" | "call" | "post-call" | "chat";
+type ViewMode = "greenroom" | "preferences" | "call" | "post-call" | "chat";
 type PipCorner = "top-right" | "top-left" | "bottom-right" | "bottom-left";
 
 type SignalMessage =
@@ -149,7 +149,6 @@ export default function CallPage() {
   const [waitingCount, setWaitingCount] = useState(1);
   const [allowRematch, setAllowRematch] = useState(true);
   const [showManualRoom, setShowManualRoom] = useState(false);
-  const [showEditPrefs, setShowEditPrefs] = useState(false);
   const [manualRoomCode, setManualRoomCode] = useState("coastal-dusk-test");
   const [joining, setJoining] = useState(false);
   const [roomError, setRoomError] = useState<string | null>(null);
@@ -1425,6 +1424,21 @@ export default function CallPage() {
     );
   }
 
+  // ---------------- 0.5. EDIT PREFERENCES VIEW ----------------
+  if (viewMode === "preferences") {
+    return (
+      <EditPreferencesView
+        profile={userProfile}
+        onBack={() => setViewMode("greenroom")}
+        onSaved={(updated) => {
+          setUserProfile(updated);
+          setEndedNotice("Preferences updated. Your new match settings are live.");
+          setViewMode("greenroom");
+        }}
+      />
+    );
+  }
+
   // ---------------- 1. SUNDAY DROP GREEN ROOM ----------------
   if (viewMode === "greenroom") {
     const meIdLower = userProfile.id.toLowerCase();
@@ -1487,7 +1501,7 @@ export default function CallPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowEditPrefs(true)}
+                onClick={() => setViewMode("preferences")}
                 className="w-full min-h-[42px] rounded-xl border border-[#E5C17B]/35 bg-[#221B17] px-3 text-xs font-semibold text-[#F0D9AE] hover:bg-[#2E251F] transition"
               >
                 Edit Preferences &amp; Vault Details
