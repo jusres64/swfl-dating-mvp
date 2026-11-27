@@ -75,14 +75,22 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
   const [locError, setLocError] = useState<string | null>(null);
 
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoProgress, setPhotoProgress] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
 
+  const [cameraOpening, setCameraOpening] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [selfieBusy, setSelfieBusy] = useState(false);
   const [selfieError, setSelfieError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraContainerRef = useRef<HTMLDivElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const onProfileUpdatedRef = useRef(onProfileUpdated);
+
+  useEffect(() => {
+    onProfileUpdatedRef.current = onProfileUpdated;
+  }, [onProfileUpdated]);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -92,6 +100,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
     setCameraOpen(false);
   }, []);
 
+  // Load verification status once on mount (never restarts on parent re-renders)
   useEffect(() => {
     let active = true;
     const loadStatus = async () => {
@@ -106,7 +115,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
         if (!active) return;
         if (data.profile) {
           setLocalProfile(data.profile);
-          onProfileUpdated(data.profile);
+          onProfileUpdatedRef.current(data.profile);
         }
         setVaultPhotos(data.vaultPhotos || []);
         setSelfieUrl(data.selfieUrl || null);
@@ -117,14 +126,21 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
     loadStatus();
     return () => {
       active = false;
+    };
+  }, []);
+
+  // Only stop the camera stream when leaving the Verification Gate screen
+  useEffect(() => {
+    return () => {
       stopCamera();
     };
-  }, [onProfileUpdated, stopCamera]);
+  }, [stopCamera]);
 
   useEffect(() => {
     if (cameraOpen && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
       videoRef.current.play().catch(() => {});
+      cameraContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [cameraOpen]);
 
@@ -159,7 +175,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
             return;
           }
           setLocalProfile(data.profile);
-          onProfileUpdated(data.profile);
+          onProfileUpdatedRef.current(data.profile);
         } catch {
           setLocError("Network error while verifying your SWFL location.");
         } finally {
@@ -182,41 +198,67 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
     );
   };
 
-  // 2. Upload Vault Photo (1 to 3 max)
-  const handleUploadVaultPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // 2. Batch-upload Vault Photos (select 1 to 3 at once)
+  const handleUploadVaultPhotos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
+
+    const currentCount = Array.isArray(localProfile.photo_urls)
+      ? localProfile.photo_urls.length
+      : 0;
+    const remainingSlots = Math.max(0, 3 - currentCount);
+    if (remainingSlots === 0) {
+      setPhotoError("You already have 3 Vault photos. Remove one first to add another.");
+      return;
+    }
+
+    const toUpload = selectedFiles.slice(0, remainingSlots);
+    const trimmedExtra = selectedFiles.length > remainingSlots;
 
     setPhotoError(null);
     setPhotoBusy(true);
     try {
-      const compressed = await compressImageFile(file);
-      const fd = new FormData();
-      fd.append("kind", "vault");
-      fd.append("file", compressed);
+      for (let i = 0; i < toUpload.length; i++) {
+        setPhotoProgress(
+          toUpload.length > 1
+            ? `Uploading ${i + 1} of ${toUpload.length}...`
+            : "Uploading Photo..."
+        );
+        const compressed = await compressImageFile(toUpload[i]);
+        const fd = new FormData();
+        fd.append("kind", "vault");
+        fd.append("file", compressed);
 
-      const res = await fetch("/api/verification/photos", {
-        method: "POST",
-        body: fd,
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        profile?: VerificationProfile;
-        vaultPhotos?: SignedPhoto[];
-        selfieUrl?: string | null;
-        error?: string;
-      };
-      if (!res.ok || !data.profile) {
-        setPhotoError(data.error || "Could not upload photo.");
-        return;
+        const res = await fetch("/api/verification/photos", {
+          method: "POST",
+          body: fd,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          profile?: VerificationProfile;
+          vaultPhotos?: SignedPhoto[];
+          selfieUrl?: string | null;
+          error?: string;
+        };
+        if (!res.ok || !data.profile) {
+          setPhotoError(data.error || `Could not upload photo ${i + 1}.`);
+          break;
+        }
+        setLocalProfile(data.profile);
+        onProfileUpdatedRef.current(data.profile);
+        setVaultPhotos(data.vaultPhotos || []);
       }
-      setLocalProfile(data.profile);
-      onProfileUpdated(data.profile);
-      setVaultPhotos(data.vaultPhotos || []);
+
+      if (trimmedExtra) {
+        setPhotoError(
+          `Uploaded the first ${remainingSlots} photo${remainingSlots === 1 ? "" : "s"} (Vault max is 3).`
+        );
+      }
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "Photo upload failed.");
     } finally {
       setPhotoBusy(false);
+      setPhotoProgress(null);
     }
   };
 
@@ -239,7 +281,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
         return;
       }
       setLocalProfile(data.profile);
-      onProfileUpdated(data.profile);
+      onProfileUpdatedRef.current(data.profile);
       setVaultPhotos(data.vaultPhotos || []);
     } finally {
       setPhotoBusy(false);
@@ -253,17 +295,28 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
       setSelfieError("Live camera capture is not supported in this browser.");
       return;
     }
+    setCameraOpening(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 960 } },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 960 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
       streamRef.current = stream;
       setCameraOpen(true);
     } catch {
       setSelfieError(
-        "Camera permission denied. Allow camera access in Chrome and tap Open Live Camera again."
+        "Camera permission denied or unavailable. Allow camera access in Chrome and tap Open Live Camera again."
       );
+    } finally {
+      setCameraOpening(false);
     }
   };
 
@@ -315,7 +368,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
       }
       stopCamera();
       setLocalProfile(data.profile);
-      onProfileUpdated(data.profile);
+      onProfileUpdatedRef.current(data.profile);
       setSelfieUrl(data.selfieUrl || null);
     } catch (err) {
       setSelfieError(err instanceof Error ? err.message : "Live selfie capture failed.");
@@ -327,6 +380,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
   const locOk = isLocationFreshClient(localProfile);
   const photosCount = Array.isArray(localProfile.photo_urls) ? localProfile.photo_urls.length : 0;
   const photosOk = photosCount >= 1;
+  const remainingSlots = Math.max(0, 3 - photosCount);
   const selfieOk =
     Boolean(localProfile.selfie_path) && localProfile.photo_verification_status !== "rejected";
   const allComplete = locOk && photosOk && selfieOk;
@@ -416,7 +470,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
                 </button>
               </div>
 
-              {/* STEP 2: VAULT PHOTOS (1 TO 3) */}
+              {/* STEP 2: VAULT PHOTOS (1 TO 3, MULTI-SELECT ENABLED) */}
               <div
                 className={`rounded-2xl border p-4 space-y-3 ${
                   photosOk
@@ -440,7 +494,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
                 </div>
 
                 <p className="text-xs text-[#B3A499] leading-relaxed">
-                  Add 1 to 3 clear photos of yourself. Nobody can browse them; they only unlock inside chat after you and a match both say yes.
+                  Select 1 to 3 clear photos of yourself (you can pick multiple at once). Nobody can browse them; they only unlock inside chat after you and a match both say yes.
                 </p>
 
                 {photoError && (
@@ -481,16 +535,19 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
+                      multiple
                       disabled={photoBusy}
-                      onChange={handleUploadVaultPhoto}
+                      onChange={handleUploadVaultPhotos}
                       className="hidden"
                     />
                     <span className="flex w-full min-h-[44px] items-center justify-center rounded-xl border border-[#E5C17B]/45 bg-[#251E18] text-xs font-semibold text-[#F0D9AE] hover:bg-[#31271F] cursor-pointer transition">
                       {photoBusy
-                        ? "Uploading Photo..."
+                        ? photoProgress || "Uploading Photo..."
                         : photosCount === 0
-                        ? "Upload First Vault Photo"
-                        : `Add Another Photo (${photosCount}/3)`}
+                        ? "Select 1–3 Vault Photos"
+                        : remainingSlots === 1
+                        ? `Add Final Photo (${photosCount}/3)`
+                        : `Add up to ${remainingSlots} More Photos (${photosCount}/3)`}
                     </span>
                   </label>
                 )}
@@ -540,7 +597,7 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
                 )}
 
                 {cameraOpen ? (
-                  <div className="space-y-2.5">
+                  <div ref={cameraContainerRef} className="space-y-2.5">
                     <div className="relative aspect-[3/4] w-full max-w-[240px] mx-auto overflow-hidden rounded-2xl border border-[#E5C17B]/40 bg-black">
                       <video
                         ref={videoRef}
@@ -594,14 +651,19 @@ export default function VerificationGateView({ profile, onBack, onProfileUpdated
 
                     <button
                       type="button"
+                      disabled={cameraOpening}
                       onClick={handleOpenSelfieCamera}
-                      className={`w-full min-h-[44px] rounded-xl text-xs font-semibold transition ${
+                      className={`w-full min-h-[44px] rounded-xl text-xs font-semibold transition disabled:opacity-60 ${
                         selfieOk
                           ? "border border-[#F0E2CC]/20 bg-[#1F191C] text-[#DDD0C2] hover:bg-[#2B2327]"
                           : "bg-[#E5C17B] text-[#1A1310] hover:bg-[#EED093]"
                       }`}
                     >
-                      {selfieOk ? "Retake Live Selfie" : "Open Live Camera"}
+                      {cameraOpening
+                        ? "Opening Camera..."
+                        : selfieOk
+                        ? "Retake Live Selfie"
+                        : "Open Live Camera"}
                     </button>
                   </div>
                 )}
